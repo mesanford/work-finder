@@ -15,3 +15,5 @@ env:
     value: "1:490601983473:web:120000f634606d45746850"
   - variable: GEMINI_API_KEY
     secret: GEMINI_API_KEY
+    availability:
+      - RUNTIME
