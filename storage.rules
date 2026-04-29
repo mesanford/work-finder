@@ -1,0 +1,15 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Knowledge Base files: only the owning user can read/write
+    match /users/{userId}/knowledge/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Deny all other access by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
