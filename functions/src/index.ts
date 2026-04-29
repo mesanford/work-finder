@@ -2,11 +2,11 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { defineString } from "firebase-functions/params";
+import { defineSecret } from "firebase-functions/params";
 
 admin.initializeApp();
 
-const GEMINI_API_KEY = defineString("GEMINI_API_KEY");
+const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 
 export const searchProjects = onCall(async (request) => {
   const { query, keywords, projectTypes, companyTypes, userId } = request.data;
