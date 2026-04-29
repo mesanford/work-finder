@@ -3,13 +3,13 @@ apiVersion: "v1beta"
 runConfig:
   minInstances: 0
   maxInstances: 10
-  memory: "512MiB"
+  memoryMiB: 512
 env:
-  - name: NEXT_PUBLIC_FIREBASE_API_KEY
+  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
     value: "AIzaSyDXp9kw39dEaBsGOELBJXU2-TGPBIVWAgM"
-  - name: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
     value: "work-finder-2026.firebaseapp.com"
-  - name: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
     value: "work-finder-2026"
-  - name: NEXT_PUBLIC_FIREBASE_APP_ID
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
     value: "1:490601983473:web:120000f634606d45746850"
