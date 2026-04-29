@@ -19,11 +19,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // Build a structured search query for Gemini to simulate job board search
-    // In a production app, you'd call actual job board APIs here.
-    // For now, we use Gemini + Google Search grounding to find real listings.
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.0-flash",
+      tools: [{ googleSearchRetrieval: {} }],
+    });
 
     const typeFilter = projectTypes?.length
       ? `Focus on these types: ${projectTypes.join(", ")}.`
@@ -35,27 +35,23 @@ export async function POST(request: Request) {
       ? `Prefer company sizes: ${companySizes.join(", ")} employees.`
       : "";
 
-    const prompt = `
-You are a job and project search assistant. Search for real, current job openings and contract opportunities matching these criteria:
+    const prompt = `Search for real, current job openings and contract opportunities matching these criteria:
 
 Keywords: ${keywords.join(", ")}
 ${typeFilter}
 ${companyFilter}
 ${sizeFilter}
 
-Find 5-8 real job postings or project opportunities. For each one, provide:
-
-Return ONLY a valid JSON array of objects with these fields:
+Find 5-8 real job postings or project opportunities. Return ONLY a valid JSON array of objects with these fields:
 - title: The job/project title
 - company: The company name
 - snippet: A 1-2 sentence description of the role/project
-- link: The URL where this was posted (use realistic job board URLs like indeed.com, linkedin.com, upwork.com)
+- link: The actual URL where this posting was found
 - projectType: One of "Contract", "Part-Time", "Freelance", "RFP", "Full-Time Remote", "Consulting"
 - location: The location or "Remote"
 - source: "job_board"
 
-Output ONLY the JSON array, no markdown, no explanation.
-`;
+Output ONLY the JSON array, no markdown, no explanation.`;
 
     const result = await model.generateContent(prompt);
     const responseText = result.response.text();
