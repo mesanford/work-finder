@@ -5,10 +5,10 @@ const https_1 = require("firebase-functions/v2/https");
 const firestore_1 = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 const generative_ai_1 = require("@google/generative-ai");
-const params_1 = require("firebase-functions/params");
+const params_1 = require("firebase-functions/params"); // v2
 admin.initializeApp();
 const GEMINI_API_KEY = (0, params_1.defineSecret)("GEMINI_API_KEY");
-exports.searchProjects = (0, https_1.onCall)(async (request) => {
+exports.searchProjects = (0, https_1.onCall)({ secrets: [GEMINI_API_KEY] }, async (request) => {
     const { query, keywords, projectTypes, companyTypes, userId } = request.data;
     // Support both direct query and profile-based search
     const searchQuery = query || (keywords ? keywords.join(" ") : null);
@@ -23,7 +23,7 @@ exports.searchProjects = (0, https_1.onCall)(async (request) => {
     try {
         const genAI = new generative_ai_1.GoogleGenerativeAI(GEMINI_API_KEY.value());
         const model = genAI.getGenerativeModel({
-            model: "gemini-2.0-flash",
+            model: "gemini-2.5-flash",
             tools: [{ googleSearchRetrieval: {} }],
         });
         const prompt = `Search for project opportunities, contracts, RFPs, and job postings matching: "${searchQuery}".
@@ -74,7 +74,7 @@ Output ONLY the JSON array, no markdown.`;
         throw new https_1.HttpsError("internal", error.message);
     }
 });
-exports.processLeadOnCreate = (0, firestore_1.onDocumentCreated)("leads/{leadId}", async (event) => {
+exports.processLeadOnCreate = (0, firestore_1.onDocumentCreated)({ document: "leads/{leadId}", secrets: [GEMINI_API_KEY] }, async (event) => {
     const snapshot = event.data;
     if (!snapshot)
         return;
@@ -83,7 +83,7 @@ exports.processLeadOnCreate = (0, firestore_1.onDocumentCreated)("leads/{leadId}
     if (data.status !== "new")
         return;
     const genAI = new generative_ai_1.GoogleGenerativeAI(GEMINI_API_KEY.value());
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     const prompt = `
     Analyze the following lead information extracted from a search result:
     Title: ${data.title}

@@ -2,13 +2,13 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { defineSecret } from "firebase-functions/params";
+import { defineSecret } from "firebase-functions/params"; // v2
 
 admin.initializeApp();
 
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 
-export const searchProjects = onCall(async (request) => {
+export const searchProjects = onCall({ secrets: [GEMINI_API_KEY] }, async (request) => {
   const { query, keywords, projectTypes, companyTypes, userId } = request.data;
   
   // Support both direct query and profile-based search
@@ -27,7 +27,7 @@ export const searchProjects = onCall(async (request) => {
   try {
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash",
+      model: "gemini-2.5-flash",
       tools: [{ googleSearchRetrieval: {} }],
     });
 
@@ -87,7 +87,7 @@ Output ONLY the JSON array, no markdown.`;
   }
 });
 
-export const processLeadOnCreate = onDocumentCreated("leads/{leadId}", async (event) => {
+export const processLeadOnCreate = onDocumentCreated({ document: "leads/{leadId}", secrets: [GEMINI_API_KEY] }, async (event) => {
   const snapshot = event.data;
   if (!snapshot) return;
 
@@ -96,7 +96,7 @@ export const processLeadOnCreate = onDocumentCreated("leads/{leadId}", async (ev
   if (data.status !== "new") return;
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
   const prompt = `
     Analyze the following lead information extracted from a search result:
