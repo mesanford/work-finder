@@ -1,17 +1,12 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import * as admin from "firebase-admin";
-import { google } from "googleapis";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { defineString } from "firebase-functions/params";
 
 admin.initializeApp();
 
-const GOOGLE_SEARCH_API_KEY = defineString("GOOGLE_SEARCH_API_KEY");
-const GOOGLE_SEARCH_CX = defineString("GOOGLE_SEARCH_CX");
 const GEMINI_API_KEY = defineString("GEMINI_API_KEY");
-
-const customsearch = google.customsearch("v1");
 
 export const searchProjects = onCall(async (request) => {
   const { query, keywords, projectTypes, companyTypes, userId } = request.data;
@@ -30,13 +25,24 @@ export const searchProjects = onCall(async (request) => {
   }
 
   try {
-    const res = await customsearch.cse.list({
-      auth: GOOGLE_SEARCH_API_KEY.value(),
-      cx: GOOGLE_SEARCH_CX.value(),
-      q: searchQuery,
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.0-flash",
+      tools: [{ googleSearchRetrieval: {} }],
     });
 
-    const items = res.data.items || [];
+    const prompt = `Search for project opportunities, contracts, RFPs, and job postings matching: "${searchQuery}".
+Return ONLY a valid JSON array of up to 10 results, each with:
+- title: the page or posting title
+- link: the full URL
+- snippet: a 1-2 sentence description
+Output ONLY the JSON array, no markdown.`;
+
+    const result = await model.generateContent(prompt);
+    const responseText = result.response.text();
+    const jsonString = responseText.replace(/```json|```/g, "").trim();
+    const items: { title: string; link: string; snippet: string }[] =
+      JSON.parse(jsonString);
     const leadsCollection = admin.firestore().collection("leads");
 
     // Fetch existing links for this user to deduplicate

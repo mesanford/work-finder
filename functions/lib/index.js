@@ -4,14 +4,10 @@ exports.processLeadOnCreate = exports.searchProjects = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const firestore_1 = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
-const googleapis_1 = require("googleapis");
 const generative_ai_1 = require("@google/generative-ai");
 const params_1 = require("firebase-functions/params");
 admin.initializeApp();
-const GOOGLE_SEARCH_API_KEY = (0, params_1.defineString)("GOOGLE_SEARCH_API_KEY");
-const GOOGLE_SEARCH_CX = (0, params_1.defineString)("GOOGLE_SEARCH_CX");
 const GEMINI_API_KEY = (0, params_1.defineString)("GEMINI_API_KEY");
-const customsearch = googleapis_1.google.customsearch("v1");
 exports.searchProjects = (0, https_1.onCall)(async (request) => {
     const { query, keywords, projectTypes, companyTypes, userId } = request.data;
     // Support both direct query and profile-based search
@@ -25,12 +21,21 @@ exports.searchProjects = (0, https_1.onCall)(async (request) => {
         throw new https_1.HttpsError("unauthenticated", "User must be authenticated");
     }
     try {
-        const res = await customsearch.cse.list({
-            auth: GOOGLE_SEARCH_API_KEY.value(),
-            cx: GOOGLE_SEARCH_CX.value(),
-            q: searchQuery,
+        const genAI = new generative_ai_1.GoogleGenerativeAI(GEMINI_API_KEY.value());
+        const model = genAI.getGenerativeModel({
+            model: "gemini-2.0-flash",
+            tools: [{ googleSearchRetrieval: {} }],
         });
-        const items = res.data.items || [];
+        const prompt = `Search for project opportunities, contracts, RFPs, and job postings matching: "${searchQuery}".
+Return ONLY a valid JSON array of up to 10 results, each with:
+- title: the page or posting title
+- link: the full URL
+- snippet: a 1-2 sentence description
+Output ONLY the JSON array, no markdown.`;
+        const result = await model.generateContent(prompt);
+        const responseText = result.response.text();
+        const jsonString = responseText.replace(/```json|```/g, "").trim();
+        const items = JSON.parse(jsonString);
         const leadsCollection = admin.firestore().collection("leads");
         // Fetch existing links for this user to deduplicate
         const existingLeads = await leadsCollection.where("userId", "==", targetUserId).get();
