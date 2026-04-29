@@ -13,33 +13,56 @@ const GOOGLE_SEARCH_CX = (0, params_1.defineString)("GOOGLE_SEARCH_CX");
 const GEMINI_API_KEY = (0, params_1.defineString)("GEMINI_API_KEY");
 const customsearch = googleapis_1.google.customsearch("v1");
 exports.searchProjects = (0, https_1.onCall)(async (request) => {
-    const { query } = request.data;
-    if (!query) {
-        throw new https_1.HttpsError("invalid-argument", "Query is required");
+    const { query, keywords, projectTypes, companyTypes, userId } = request.data;
+    // Support both direct query and profile-based search
+    const searchQuery = query || (keywords ? keywords.join(" ") : null);
+    if (!searchQuery) {
+        throw new https_1.HttpsError("invalid-argument", "Query or keywords are required");
+    }
+    // Use the user's ID if provided, otherwise the auth context
+    const targetUserId = userId || request.auth?.uid;
+    if (!targetUserId) {
+        throw new https_1.HttpsError("unauthenticated", "User must be authenticated");
     }
     try {
         const res = await customsearch.cse.list({
             auth: GOOGLE_SEARCH_API_KEY.value(),
             cx: GOOGLE_SEARCH_CX.value(),
-            q: query,
+            q: searchQuery,
         });
         const items = res.data.items || [];
         const leadsCollection = admin.firestore().collection("leads");
+        // Fetch existing links for this user to deduplicate
+        const existingLeads = await leadsCollection.where("userId", "==", targetUserId).get();
+        const existingLinks = new Set(existingLeads.docs.map(doc => doc.data().link));
+        let count = 0;
+        let duplicatesSkipped = 0;
         const batch = admin.firestore().batch();
         items.forEach((item) => {
+            if (item.link && existingLinks.has(item.link)) {
+                duplicatesSkipped++;
+                return;
+            }
             const docRef = leadsCollection.doc();
             batch.set(docRef, {
                 title: item.title,
                 link: item.link,
                 snippet: item.snippet,
                 source: "google_search",
-                status: "raw",
+                status: "new",
+                userId: targetUserId,
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                query: query,
+                query: searchQuery,
+                // Include profile metadata if available
+                projectType: projectTypes ? projectTypes[0] : null,
+                companyInfo: companyTypes ? companyTypes[0] : null,
             });
+            count++;
         });
-        await batch.commit();
-        return { success: true, count: items.length };
+        if (count > 0) {
+            await batch.commit();
+        }
+        return { success: true, count, duplicatesSkipped };
     }
     catch (error) {
         console.error("Search error:", error);
@@ -51,7 +74,8 @@ exports.processLeadOnCreate = (0, firestore_1.onDocumentCreated)("leads/{leadId}
     if (!snapshot)
         return;
     const data = snapshot.data();
-    if (data.status !== "raw")
+    // Only process new leads that haven't been processed yet
+    if (data.status !== "new")
         return;
     const genAI = new generative_ai_1.GoogleGenerativeAI(GEMINI_API_KEY.value());
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
@@ -64,10 +88,10 @@ exports.processLeadOnCreate = (0, firestore_1.onDocumentCreated)("leads/{leadId}
     Extract and summarize the following in JSON format:
     - description: A concise summary of the project or job opening.
     - projectType: Is it a project bid, contract role, or part-time job?
-    - keySkills: A list of required skills or keywords.
+    - keySkills: A list of required skills or keywords as an array of strings.
     - companyInfo: Name of the company and any size/type info if available.
     - contactMethods: Suggested ways to reach out (email, form, social profile).
-    - priority: Scale of 1-5 based on how well it fits a software engineering company profile.
+    - priority: A number from 1-5 based on how well it fits a software engineering company profile.
 
     Output ONLY valid JSON.
   `;
@@ -85,9 +109,11 @@ exports.processLeadOnCreate = (0, firestore_1.onDocumentCreated)("leads/{leadId}
     }
     catch (error) {
         console.error("Gemini processing error:", error);
+        // Don't mark as error if it's just a parse failure, maybe it's not a valid lead
+        // But update status so we don't keep trying
         await snapshot.ref.update({
-            status: "error",
-            error: error.message,
+            status: "processed", // Move past 'new' even if AI fails
+            aiError: error.message,
         });
     }
 });
