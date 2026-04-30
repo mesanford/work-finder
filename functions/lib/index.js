@@ -79,25 +79,10 @@ const SEARCH_PAGE_PATTERNS = [
 function isSearchResultPage(url) {
     return SEARCH_PAGE_PATTERNS.some((p) => p.test(url));
 }
-async function isLinkValid(url) {
-    if (isSearchResultPage(url))
+function isLinkValid(url) {
+    if (!url)
         return false;
-    try {
-        const res = await fetch(url, {
-            method: "HEAD",
-            redirect: "follow",
-            signal: AbortSignal.timeout(4000),
-        });
-        if (!res.ok)
-            return false;
-        const final = new URL(res.url);
-        if (isSearchResultPage(final.href))
-            return false;
-        return final.pathname.length > 1;
-    }
-    catch {
-        return false;
-    }
+    return !isSearchResultPage(url);
 }
 admin.initializeApp();
 const GEMINI_API_KEY = (0, params_1.defineSecret)("GEMINI_API_KEY");
@@ -192,11 +177,7 @@ Return ONLY the JSON array.`, noThinkConfig, 2)), 2);
             }
         }
     }
-    const validationResults = await Promise.allSettled(allItems.map((item) => isLinkValid(item.link)));
-    const validated = allItems.filter((_, i) => {
-        const r = validationResults[i];
-        return r.status === "fulfilled" && r.value;
-    });
+    const validated = allItems.filter((item) => isLinkValid(item.link));
     if (validated.length === 0) {
         return { count: 0, duplicatesSkipped: 0 };
     }

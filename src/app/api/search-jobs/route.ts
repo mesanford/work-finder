@@ -67,21 +67,9 @@ function isSearchResultPage(url: string): boolean {
   return SEARCH_PAGE_PATTERNS.some((p) => p.test(url));
 }
 
-async function isLinkValid(url: string): Promise<boolean> {
-  if (isSearchResultPage(url)) return false;
-  try {
-    const res = await fetch(url, {
-      method: "HEAD",
-      redirect: "follow",
-      signal: AbortSignal.timeout(4000),
-    });
-    if (!res.ok) return false;
-    const final = new URL(res.url);
-    if (isSearchResultPage(final.href)) return false;
-    return final.pathname.length > 1;
-  } catch {
-    return false;
-  }
+function isLinkValid(url: string): boolean {
+  if (!url) return false;
+  return !isSearchResultPage(url);
 }
 
 const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will"`;
@@ -140,12 +128,7 @@ Output ONLY the JSON array.`;
     const result = await generateWithBackoff(genAI, models, searchTools, prompt, noThinkConfig, 3);
     const rawItems = parseJsonArray(result.response.text());
 
-    // URL validation — drop 404s and root-domain redirects
-    const validationResults = await Promise.allSettled(rawItems.map((item: any) => isLinkValid(item.link)));
-    const jobs = rawItems.filter((_: any, i: number) => {
-      const r = validationResults[i];
-      return r.status === "fulfilled" && r.value;
-    });
+    const jobs = rawItems.filter((item: any) => isLinkValid(item.link));
 
     console.log(`Job search: ${jobs.length} validated of ${rawItems.length} raw`);
 

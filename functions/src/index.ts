@@ -86,21 +86,9 @@ function isSearchResultPage(url: string): boolean {
   return SEARCH_PAGE_PATTERNS.some((p) => p.test(url));
 }
 
-async function isLinkValid(url: string): Promise<boolean> {
-  if (isSearchResultPage(url)) return false;
-  try {
-    const res = await fetch(url, {
-      method: "HEAD",
-      redirect: "follow",
-      signal: AbortSignal.timeout(4000),
-    });
-    if (!res.ok) return false;
-    const final = new URL(res.url);
-    if (isSearchResultPage(final.href)) return false;
-    return final.pathname.length > 1;
-  } catch {
-    return false;
-  }
+function isLinkValid(url: string): boolean {
+  if (!url) return false;
+  return !isSearchResultPage(url);
 }
 
 admin.initializeApp();
@@ -233,11 +221,7 @@ Return ONLY the JSON array.`,
     }
   }
 
-  const validationResults = await Promise.allSettled(allItems.map((item) => isLinkValid(item.link)));
-  const validated = allItems.filter((_, i) => {
-    const r = validationResults[i];
-    return r.status === "fulfilled" && r.value;
-  });
+  const validated = allItems.filter((item) => isLinkValid(item.link));
 
   if (validated.length === 0) {
     return { count: 0, duplicatesSkipped: 0 };
