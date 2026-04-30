@@ -28,7 +28,7 @@ export const searchProjects = onCall({ secrets: [GEMINI_API_KEY] }, async (reque
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-flash",
-      tools: [{ googleSearchRetrieval: {} }],
+      tools: [{ googleSearch: {} }],
     });
 
     const prompt = `Search for project opportunities, contracts, RFPs, and job postings matching: "${searchQuery}".
