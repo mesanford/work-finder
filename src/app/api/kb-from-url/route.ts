@@ -7,6 +7,10 @@ const isRetryable = (err: any) => {
   const status = err?.status || err?.response?.status;
   return msg.includes("429") || msg.includes("503") || status === 429 || status === 503;
 };
+const skipModel = (err: any) => {
+  const msg = err?.message || "";
+  return msg.includes("404") || msg.includes("not found");
+};
 
 async function generateWithFallback(apiKey: string, prompt: string): Promise<string> {
   const genAI = new GoogleGenerativeAI(apiKey);
@@ -19,6 +23,7 @@ async function generateWithFallback(apiKey: string, prompt: string): Promise<str
         return result.response.text();
       } catch (err: any) {
         lastError = err;
+        if (skipModel(err)) break;
         if (!isRetryable(err)) throw err;
         if (attempt === 0) await sleep(2000 + Math.random() * 1000);
       }
