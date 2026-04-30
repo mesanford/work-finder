@@ -66,7 +66,7 @@ INSTRUCTIONS:
 
     const chat = model.startChat({
       history: chatHistory,
-      systemInstruction,
+      systemInstruction: { role: "system", parts: [{ text: systemInstruction }] },
     });
 
     const result = await chat.sendMessage(userMessage || "Draft a proposal for this lead.");
