@@ -21,6 +21,7 @@ interface Lead {
   keySkills?: string[];
   companyInfo?: string;
   priority?: number;
+  matchReason?: string;
   source?: string;
   notes?: string;
   createdAt: any;
@@ -149,6 +150,13 @@ export default function LeadCard({ lead }: LeadCardProps) {
       <p className="text-xs text-gray-500 mb-2.5 line-clamp-2 leading-relaxed">
         {lead.description || lead.snippet}
       </p>
+
+      {/* Match reason */}
+      {lead.matchReason && (
+        <p className="text-[11px] text-indigo-500 italic mb-2.5 line-clamp-2 leading-relaxed">
+          {lead.matchReason}
+        </p>
+      )}
 
       {/* Skills */}
       <div className="flex flex-wrap gap-1 mb-3">

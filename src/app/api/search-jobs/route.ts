@@ -5,6 +5,10 @@ const RETRYABLE = (err: any) => {
   const status = err?.status || err?.response?.status;
   return msg.includes("429") || msg.includes("503") || status === 429 || status === 503;
 };
+const SKIP_MODEL = (err: any) => {
+  const msg = err?.message || "";
+  return msg.includes("404") || msg.includes("not found");
+};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -26,6 +30,7 @@ async function generateWithBackoff(
         return await model.generateContent(prompt);
       } catch (err: any) {
         lastError = err;
+        if (SKIP_MODEL(err)) break;
         if (!RETRYABLE(err)) throw err;
         if (attempt < maxRetries - 1) await sleep(Math.pow(2, attempt) * 1000 + Math.random() * 1000);
       }
@@ -34,56 +39,66 @@ async function generateWithBackoff(
   throw lastError;
 }
 
+function parseJsonArray(text: string): any[] {
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start === -1 || end <= start) return [];
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+}
+
+async function isLinkValid(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return false;
+    const final = new URL(res.url);
+    return final.pathname.length > 1;
+  } catch {
+    return false;
+  }
+}
+
+const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will"`;
+
 export async function POST(request: Request) {
   try {
     const { keywords, projectTypes, companyTypes, companySizes } = await request.json();
 
     if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
-      return Response.json(
-        { error: "At least one keyword is required" },
-        { status: 400 }
-      );
+      return Response.json({ error: "At least one keyword is required" }, { status: 400 });
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return Response.json(
-        { error: "Gemini API key not configured" },
-        { status: 500 }
-      );
+      return Response.json({ error: "Gemini API key not configured" }, { status: 500 });
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    // Use the most current tool name for Google Search grounding
-    const searchTools = [{ googleSearchRetrieval: {} } as any];
-    const models = [
-      "gemini-3.1-flash-preview",
-      "gemini-3-flash-preview", 
-      "gemini-2.0-flash",
-      "gemini-2.5-flash", 
-      "gemini-1.5-flash",
-      "gemini-1.5-flash-8b"
-    ];
+    const searchTools = [{ googleSearch: {} } as any];
+    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+    const noThinkConfig = { thinkingConfig: { thinkingBudget: 0 } };
 
-    const typeFilter = projectTypes?.length
-      ? `Focus on these types: ${projectTypes.join(", ")}.`
-      : "";
-    const companyFilter = companyTypes?.length
-      ? `Prefer companies that are: ${companyTypes.join(", ")}.`
-      : "";
-    const sizeFilter = companySizes?.length
-      ? `Prefer company sizes: ${companySizes.join(", ")} employees.`
-      : "";
+    const typeFilter = projectTypes?.length ? `Focus on these types: ${projectTypes.join(", ")}.` : "";
+    const companyFilter = companyTypes?.length ? `Prefer companies that are: ${companyTypes.join(", ")}.` : "";
+    const sizeFilter = companySizes?.length ? `Prefer company sizes: ${companySizes.join(", ")} employees.` : "";
 
-    const prompt = `Search for real, currently open job postings and contract opportunities matching these criteria:
+    const prompt = `Search for real, currently open job postings and contract opportunities where COMPANIES ARE HIRING for these skills:
 
 Keywords: ${keywords.join(", ")}
 ${typeFilter}
 ${companyFilter}
 ${sizeFilter}
 
-Find 5-8 real job postings or project opportunities. 
-CRITICAL: Focus on direct links to individual job descriptions or project listing pages (deep links). Avoid providing the general homepage of job boards or companies (e.g., provide the link to a specific role on LinkedIn/Indeed, not just LinkedIn.com).
+Find 5-8 demand-side opportunities (companies seeking contractors, NOT freelancers offering services).
+Exclude supply-side platforms: ${SUPPLY_EXCLUSIONS}
+CRITICAL: Provide deep links to individual job descriptions, not homepages or search result pages.
 
 Return ONLY a valid JSON array of objects with these fields:
 - title: The job/project title
@@ -96,58 +111,21 @@ Return ONLY a valid JSON array of objects with these fields:
 
 Output ONLY the JSON array.`;
 
-    let responseText = "";
-    try {
-      const result = await generateWithBackoff(
-        genAI,
-        models,
-        searchTools,
-        prompt,
-        { thinkingConfig: { thinkingBudget: 0 } },
-        3
-      );
-      responseText = result.response.text();
-    } catch (searchError) {
-      console.error("Grounded job search failed entirely, trying fallback:", searchError);
-      // Final attempt: knowledge-based search without tools
-      const fallbackResult = await generateWithBackoff(
-        genAI,
-        models,
-        [],
-        prompt,
-        { thinkingConfig: { thinkingBudget: 0 } },
-        2
-      );
-      responseText = fallbackResult.response.text();
-    }
+    const result = await generateWithBackoff(genAI, models, searchTools, prompt, noThinkConfig, 3);
+    const rawItems = parseJsonArray(result.response.text());
 
-    console.log("Job search AI response:", responseText);
-    const jsonString = responseText.replace(/```json|```/g, "").trim();
+    // URL validation — drop 404s and root-domain redirects
+    const validationResults = await Promise.allSettled(rawItems.map((item: any) => isLinkValid(item.link)));
+    const jobs = rawItems.filter((_: any, i: number) => {
+      const r = validationResults[i];
+      return r.status === "fulfilled" && r.value;
+    });
 
-    let jobs;
-    try {
-      jobs = JSON.parse(jsonString);
-    } catch (err) {
-      console.error("Failed to parse jobs JSON:", err, "Raw text:", responseText);
-      return Response.json(
-        { error: "Failed to parse job results from AI" },
-        { status: 500 }
-      );
-    }
-
-    if (!Array.isArray(jobs)) {
-      return Response.json(
-        { error: "Invalid job results format" },
-        { status: 500 }
-      );
-    }
+    console.log(`Job search: ${jobs.length} validated of ${rawItems.length} raw`);
 
     return Response.json({ jobs });
   } catch (error: any) {
     console.error("Job search error:", error);
-    return Response.json(
-      { error: error.message || "Failed to search for jobs" },
-      { status: 500 }
-    );
+    return Response.json({ error: error.message || "Failed to search for jobs" }, { status: 500 });
   }
 }
