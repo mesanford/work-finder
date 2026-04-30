@@ -11,6 +11,7 @@ import FileUploadZone from "@/components/FileUploadZone";
 import {
   X, Save, Trash2, Tag, Loader2,
   Building2, FileText, UserCircle, Briefcase, Shield, BookOpen,
+  Link, Sparkles,
 } from "lucide-react";
 
 /* Map icon keys to components */
@@ -41,6 +42,11 @@ export default function KnowledgeEntryModal({
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  /* URL import */
+  const [importUrl, setImportUrl] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState("");
+
   /* File state */
   const [fileUrl, setFileUrl] = useState(entry?.fileUrl || "");
   const [fileName, setFileName] = useState(entry?.fileName || "");
@@ -55,6 +61,31 @@ export default function KnowledgeEntryModal({
     window.addEventListener("keydown", handleEsc);
     return () => window.removeEventListener("keydown", handleEsc);
   }, [onClose]);
+
+  const handleImportUrl = async () => {
+    if (!importUrl.trim()) return;
+    setImporting(true);
+    setImportError("");
+    try {
+      const res = await fetch("/api/kb-from-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: importUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Import failed");
+      const { entry } = data;
+      if (entry.title) setTitle(entry.title);
+      if (entry.content) setContent(entry.content);
+      if (entry.type) setType(entry.type);
+      if (entry.tags?.length) setTagsRaw(entry.tags.join(", "));
+      setImportUrl("");
+    } catch (err: any) {
+      setImportError(err.message || "Failed to import from URL");
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!title.trim()) return;
@@ -110,6 +141,45 @@ export default function KnowledgeEntryModal({
 
         {/* ─── Body ─── */}
         <div className="p-6 space-y-5">
+          {/* URL Import */}
+          {!isEdit && (
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4">
+              <label className="block text-xs font-bold text-indigo-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Sparkles size={12} /> Import from URL
+              </label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Link size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="url"
+                    value={importUrl}
+                    onChange={(e) => { setImportUrl(e.target.value); setImportError(""); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleImportUrl(); } }}
+                    placeholder="https://company.com/about, linkedin.com/in/…"
+                    className="w-full pl-9 pr-3 py-2 text-sm border border-indigo-200 bg-white rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 placeholder:text-gray-400"
+                    disabled={importing}
+                  />
+                </div>
+                <button
+                  onClick={handleImportUrl}
+                  disabled={importing || !importUrl.trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  {importing ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                  {importing ? "Importing…" : "Import"}
+                </button>
+              </div>
+              {importError && (
+                <p className="text-xs text-red-600 mt-2">{importError}</p>
+              )}
+              {!importError && (
+                <p className="text-[11px] text-indigo-500 mt-2">
+                  Gemini will fetch the page and pre-fill the fields below. You can edit before saving.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Title */}
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">

@@ -16,7 +16,7 @@ import LeadCard from "@/components/LeadCard";
 import SearchProfileSidebar from "@/components/SearchProfileSidebar";
 import {
   Search, Loader2, Plus, Filter, LogOut, ChevronLeft,
-  ChevronRight, X, Briefcase, ArrowUpDown, BookOpen,
+  ChevronRight, X, Briefcase, ArrowUpDown, BookOpen, Link as LinkIcon, Sparkles,
 } from "lucide-react";
 import { PIPELINE_STAGES, SORT_OPTIONS, type SortKey } from "@/lib/pipeline";
 
@@ -48,6 +48,11 @@ export default function Dashboard() {
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [sortBy, setSortBy] = useState<SortKey>("date_desc");
   const [showSidebar, setShowSidebar] = useState(true);
+  // URL import
+  const [showUrlImport, setShowUrlImport] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importFeedback, setImportFeedback] = useState("");
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const router = useRouter();
@@ -209,6 +214,56 @@ export default function Dashboard() {
     } finally {
       setIsSearching(false);
       setTimeout(() => setSearchFeedback(""), 5000);
+    }
+  };
+
+  // Manual URL import
+  const handleImportUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!importUrl.trim() || !user) return;
+    setIsImporting(true);
+    setImportFeedback("");
+    try {
+      const res = await fetch("/api/lead-from-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: importUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Import failed");
+      const { lead } = data;
+
+      const existingLinks = new Set(leads.map((l) => l.link));
+      if (existingLinks.has(importUrl.trim())) {
+        setImportFeedback("This URL is already in your leads.");
+        return;
+      }
+
+      await addDoc(collection(db, "leads"), {
+        title: lead.title || "Untitled",
+        link: importUrl.trim(),
+        snippet: lead.snippet || "",
+        company: lead.company || null,
+        companyInfo: lead.company || null,
+        projectType: lead.projectType || null,
+        location: lead.location || null,
+        keySkills: lead.keySkills || [],
+        priority: lead.priority || null,
+        source: "manual",
+        status: "new",
+        userId: user.uid,
+        createdAt: serverTimestamp(),
+        query: "manual import",
+      });
+
+      setImportFeedback("Lead added successfully.");
+      setImportUrl("");
+      setShowUrlImport(false);
+    } catch (err: any) {
+      setImportFeedback(err.message || "Failed to import lead.");
+    } finally {
+      setIsImporting(false);
+      setTimeout(() => setImportFeedback(""), 5000);
     }
   };
 
@@ -429,7 +484,7 @@ export default function Dashboard() {
           {/* Main content */}
           <main className="flex-1 min-w-0">
             {/* Search bar */}
-            <form onSubmit={handleSearch} className="mb-4">
+            <form onSubmit={handleSearch} className={showUrlImport ? "mb-2" : "mb-4"}>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -449,8 +504,54 @@ export default function Dashboard() {
                   {isSearching ? <Loader2 className="animate-spin" size={16} /> : <Plus size={16} />}
                   Search
                 </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowUrlImport(!showUrlImport); setImportFeedback(""); }}
+                  className={`px-4 py-2.5 rounded-xl font-semibold flex items-center gap-2 text-sm border transition-colors ${
+                    showUrlImport
+                      ? "bg-violet-50 text-violet-700 border-violet-300"
+                      : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
+                  }`}
+                  title="Add a lead by pasting a URL"
+                >
+                  <LinkIcon size={16} />
+                  <span className="hidden sm:inline">Add by URL</span>
+                </button>
               </div>
             </form>
+
+            {/* URL import row */}
+            {showUrlImport && (
+              <form onSubmit={handleImportUrl} className="mb-4">
+                <div className="flex gap-2 p-3 bg-violet-50 border border-violet-200 rounded-xl">
+                  <div className="relative flex-1">
+                    <Sparkles className="absolute left-3 top-1/2 -translate-y-1/2 text-violet-400" size={15} />
+                    <input
+                      type="url"
+                      autoFocus
+                      placeholder="Paste a job posting or RFP URL…"
+                      className="w-full pl-9 pr-4 py-2 text-sm border border-violet-200 bg-white rounded-lg outline-none focus:ring-2 focus:ring-violet-500 placeholder:text-gray-400"
+                      value={importUrl}
+                      onChange={(e) => setImportUrl(e.target.value)}
+                      disabled={isImporting}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isImporting || !importUrl.trim()}
+                    className="px-4 py-2 bg-violet-600 text-white rounded-lg font-semibold hover:bg-violet-700 disabled:opacity-40 flex items-center gap-2 text-sm transition-colors"
+                  >
+                    {isImporting ? <Loader2 className="animate-spin" size={15} /> : <Sparkles size={15} />}
+                    {isImporting ? "Importing…" : "Import"}
+                  </button>
+                </div>
+                {importFeedback && (
+                  <p className={`text-xs mt-1.5 px-1 ${importFeedback.includes("success") || importFeedback.includes("added") ? "text-emerald-600" : "text-red-600"}`}>
+                    {importFeedback}
+                  </p>
+                )}
+              </form>
+            )}
 
             {/* Search feedback */}
             {searchFeedback && (

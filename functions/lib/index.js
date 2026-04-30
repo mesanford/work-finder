@@ -54,7 +54,25 @@ function parseJsonArray(text) {
         return [];
     }
 }
+// Patterns that identify search results pages rather than individual job listings
+const SEARCH_PAGE_PATTERNS = [
+    /[?&](q|query|search|keywords?|k|what|term|jobtitle|l|location)=/i,
+    /\/jobs\/search/i,
+    /\/job-search/i,
+    /\/jobs-search/i,
+    /\/search\?(.*)(job|role|position)/i,
+    /\/results(\?|\/)/i,
+    /\/find(\?|\/jobs)/i,
+    /\/vacancies\?/i,
+    /\/positions\?/i,
+    /\/jobs\?((?!id=|jk=|jobid=).)*$/i, // job board search params but not individual-job params
+];
+function isSearchResultPage(url) {
+    return SEARCH_PAGE_PATTERNS.some((p) => p.test(url));
+}
 async function isLinkValid(url) {
+    if (isSearchResultPage(url))
+        return false;
     try {
         const res = await fetch(url, {
             method: "HEAD",
@@ -64,6 +82,8 @@ async function isLinkValid(url) {
         if (!res.ok)
             return false;
         const final = new URL(res.url);
+        if (isSearchResultPage(final.href))
+            return false;
         return final.pathname.length > 1;
     }
     catch {
@@ -130,13 +150,19 @@ Return ONLY a JSON array of strings.`;
         queries = [`${keywords.join(" ")} contract opportunity hiring ${SUPPLY_EXCLUSIONS}`];
     }
     // Stage 3: Parallel Grounded Search + URL Validation
-    const searchResults = await Promise.allSettled(queries.map((q) => generateWithBackoff(genAI, models, searchTools, `Search for currently open job postings and contract opportunities matching: "${q}"
+    const searchResults = await Promise.allSettled(queries.map((q) => generateWithBackoff(genAI, models, searchTools, `Search for currently open individual job postings and contract opportunities matching: "${q}"
+
+CRITICAL URL RULES — each link MUST:
+- Point to a single, specific job listing page (e.g. linkedin.com/jobs/view/1234567890, indeed.com/viewjob?jk=abc, lever.co/company/job-title)
+- NOT be a search results page (reject any URL containing /search, /jobs/search, ?q=, ?query=, ?keywords=, ?search=)
+- NOT be a homepage or category page
 
 Return ONLY a valid JSON array of objects with:
 - title: The job/project title
-- link: The direct URL to the specific posting (deep link, not a homepage)
+- link: The direct deep-link URL to the individual posting
 - snippet: A 1-2 sentence description
 
+If you cannot find a verified deep link to an individual posting, omit that result entirely.
 Return ONLY the JSON array.`, noThinkConfig, 2)));
     const seen = new Set();
     const allItems = [];

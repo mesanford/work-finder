@@ -50,7 +50,25 @@ function parseJsonArray(text: string): any[] {
   }
 }
 
+const SEARCH_PAGE_PATTERNS = [
+  /[?&](q|query|search|keywords?|k|what|term|jobtitle|l|location)=/i,
+  /\/jobs\/search/i,
+  /\/job-search/i,
+  /\/jobs-search/i,
+  /\/search\?(.*)(job|role|position)/i,
+  /\/results(\?|\/)/i,
+  /\/find(\?|\/jobs)/i,
+  /\/vacancies\?/i,
+  /\/positions\?/i,
+  /\/jobs\?((?!id=|jk=|jobid=).)*$/i,
+];
+
+function isSearchResultPage(url: string): boolean {
+  return SEARCH_PAGE_PATTERNS.some((p) => p.test(url));
+}
+
 async function isLinkValid(url: string): Promise<boolean> {
+  if (isSearchResultPage(url)) return false;
   try {
     const res = await fetch(url, {
       method: "HEAD",
@@ -59,6 +77,7 @@ async function isLinkValid(url: string): Promise<boolean> {
     });
     if (!res.ok) return false;
     const final = new URL(res.url);
+    if (isSearchResultPage(final.href)) return false;
     return final.pathname.length > 1;
   } catch {
     return false;
@@ -98,7 +117,12 @@ ${sizeFilter}
 
 Find 5-8 demand-side opportunities (companies seeking contractors, NOT freelancers offering services).
 Exclude supply-side platforms: ${SUPPLY_EXCLUSIONS}
-CRITICAL: Provide deep links to individual job descriptions, not homepages or search result pages.
+
+CRITICAL URL RULES — each link MUST:
+- Point to a single, specific job listing page (e.g. linkedin.com/jobs/view/1234567890, lever.co/company/role, greenhouse.io/company/job)
+- NOT be a search results page (reject any URL with /search, /jobs/search, ?q=, ?query=, ?keywords=, ?search= in it)
+- NOT be a homepage, category page, or company careers landing page
+If you cannot find a verified deep link to an individual posting, omit that result.
 
 Return ONLY a valid JSON array of objects with these fields:
 - title: The job/project title
