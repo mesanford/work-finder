@@ -1,26 +1,28 @@
 import { GoogleGenerativeAI, Content } from "@google/generative-ai";
 
+const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const isRetryable = (err: any) => {
+  const msg = err?.message || "";
+  const status = err?.status || err?.response?.status;
+  return msg.includes("429") || msg.includes("503") || status === 429 || status === 503;
+};
+
 export async function POST(request: Request) {
   try {
     const { lead, companyProfile, history, userMessage, knowledgeContext } = await request.json();
 
     if (!lead) {
-      return Response.json(
-        { error: "Lead data is required" },
-        { status: 400 }
-      );
+      return Response.json({ error: "Lead data is required" }, { status: 400 });
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return Response.json(
-        { error: "Gemini API key is not configured" },
-        { status: 500 }
-      );
+      return Response.json({ error: "Gemini API key is not configured" }, { status: 500 });
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     // Build Knowledge Base context section from selected entries
     let knowledgeSection = "";
@@ -56,7 +58,6 @@ INSTRUCTIONS:
 - If the user asks a question about the lead or strategy, answer helpfully using the context above.
 - When knowledge base entries are available, actively reference and incorporate the relevant information (company capabilities, past projects, team expertise, pricing guidelines, etc.) to make proposals more specific and credible.`;
 
-    // Build Gemini-compatible chat history
     const chatHistory: Content[] = (history || []).map(
       (msg: { role: string; content: string }) => ({
         role: msg.role === "assistant" ? "model" : "user",
@@ -64,15 +65,29 @@ INSTRUCTIONS:
       })
     );
 
-    const chat = model.startChat({
-      history: chatHistory,
-      systemInstruction: { role: "system", parts: [{ text: systemInstruction }] },
-    });
+    const msg = userMessage || "Draft a proposal for this lead.";
 
-    const result = await chat.sendMessage(userMessage || "Draft a proposal for this lead.");
-    const text = result.response.text();
+    // Try each model with up to 2 retries on transient errors
+    let lastError: any;
+    for (const modelName of MODELS) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const model = genAI.getGenerativeModel({ model: modelName });
+          const chat = model.startChat({
+            history: chatHistory,
+            systemInstruction: { role: "system", parts: [{ text: systemInstruction }] },
+          });
+          const result = await chat.sendMessage(msg);
+          return Response.json({ message: result.response.text() });
+        } catch (err: any) {
+          lastError = err;
+          if (!isRetryable(err)) throw err;
+          if (attempt === 0) await sleep(1500 + Math.random() * 1000);
+        }
+      }
+    }
 
-    return Response.json({ message: text });
+    throw lastError;
   } catch (error: any) {
     console.error("Proposal chat error:", error);
     return Response.json(
