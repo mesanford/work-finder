@@ -18,6 +18,7 @@ interface SearchProfile {
   companySizes: string[];
   projectTypes: string[];
   sources: string[];
+  maxResults?: number;
 }
 
 interface Props {
@@ -156,6 +157,9 @@ export default function SearchProfileSidebar({ onRunSearch, isSearching }: Props
                         <span className="font-medium">Companies:</span> {profile.companyTypes.join(", ")}
                       </p>
                     )}
+                    <p className="text-[10px] text-gray-500">
+                      <span className="font-medium">Max results:</span> {profile.maxResults ?? 25}
+                    </p>
                     <button
                       onClick={() => onRunSearch(profile)}
                       disabled={isSearching}

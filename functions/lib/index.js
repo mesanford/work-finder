@@ -102,9 +102,12 @@ async function isLinkValid(url) {
 admin.initializeApp();
 const GEMINI_API_KEY = (0, params_1.defineSecret)("GEMINI_API_KEY");
 const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will"`;
-async function runSearchPipeline(profile, genAI, db) {
+async function runSearchPipeline(profile, genAI, db, maxResults = 25) {
     const { userId, keywords = [], projectTypes = [], companyTypes = [] } = profile;
     const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+    // Scale query count to hit maxResults; URL validation drops ~50%, so aim for 2× raw
+    const numQueries = Math.min(Math.ceil(maxResults / 5), 20);
+    const perQuery = Math.ceil((maxResults * 2) / numQueries);
     const noThinkConfig = { thinkingConfig: { thinkingBudget: 0 } };
     const searchTools = [{ googleSearch: {} }];
     // Stage 1: KB Profile Build
@@ -138,15 +141,16 @@ Search criteria:
 ${typeFilter}
 ${companyFilter}
 
-Generate 4-6 Google search queries that will find DEMAND-SIDE opportunities only — companies, agencies, or governments seeking to hire or contract this person's services.
+Generate exactly ${numQueries} Google search queries that will find DEMAND-SIDE opportunities only — companies, agencies, or governments seeking to hire or contract this person's services.
 
 Rules:
 - Every query must be from the buyer's perspective ("hiring", "seeking", "RFP", "contract opportunity", "statement of work")
 - Append these exclusions to every query: ${SUPPLY_EXCLUSIONS}
 - Vary query structure: mix job boards (site:linkedin.com/jobs), government sources (site:sam.gov), and open web
+- Use different angles: some by skill, some by industry vertical, some by project type, some by geography
 - Tailor queries to the contractor's specific stack and seniority from the profile above
 
-Return ONLY a JSON array of strings.`;
+Return ONLY a JSON array of exactly ${numQueries} strings.`;
         try {
             const queryGenResult = await generateWithBackoff(genAI, models, [], queryGenPrompt, noThinkConfig, 2);
             queries = parseJsonArray(queryGenResult.response.text()).filter((q) => typeof q === "string");
@@ -160,6 +164,8 @@ Return ONLY a JSON array of strings.`;
     }
     // Stage 3: Concurrency-limited grounded search (2 at a time to stay within RPM)
     const searchResults = await runConcurrent(queries.map((q) => () => generateWithBackoff(genAI, models, searchTools, `Search for currently open individual job postings and contract opportunities matching: "${q}"
+
+Find up to ${perQuery} results.
 
 CRITICAL URL RULES — each link MUST:
 - Point to a single, specific job listing page (e.g. linkedin.com/jobs/view/1234567890, indeed.com/viewjob?jk=abc, lever.co/company/job-title)
@@ -261,7 +267,7 @@ Rules:
     return { count, duplicatesSkipped };
 }
 exports.searchProjects = (0, https_1.onCall)({ secrets: [GEMINI_API_KEY], timeoutSeconds: 300 }, async (request) => {
-    const { query, keywords, projectTypes, companyTypes, userId } = request.data;
+    const { query, keywords, projectTypes, companyTypes, userId, maxResults } = request.data;
     const searchKeywords = keywords || (query ? [query] : []);
     if (searchKeywords.length === 0) {
         throw new https_1.HttpsError("invalid-argument", "Query or keywords are required");
@@ -272,7 +278,7 @@ exports.searchProjects = (0, https_1.onCall)({ secrets: [GEMINI_API_KEY], timeou
     }
     const genAI = new generative_ai_1.GoogleGenerativeAI(GEMINI_API_KEY.value());
     const db = admin.firestore();
-    const { count, duplicatesSkipped } = await runSearchPipeline({ userId: targetUserId, keywords: searchKeywords, projectTypes, companyTypes }, genAI, db);
+    const { count, duplicatesSkipped } = await runSearchPipeline({ userId: targetUserId, keywords: searchKeywords, projectTypes, companyTypes }, genAI, db, Math.min(Math.max(maxResults || 25, 10), 100));
     return { success: true, count, duplicatesSkipped };
 });
 exports.scheduledDailySearch = (0, scheduler_1.onSchedule)({ schedule: "every 24 hours", secrets: [GEMINI_API_KEY], timeoutSeconds: 540 }, async () => {
@@ -293,11 +299,12 @@ exports.scheduledDailySearch = (0, scheduler_1.onSchedule)({ schedule: "every 24
             keywords: data.keywords || [],
             projectTypes: data.projectTypes || [],
             companyTypes: data.companyTypes || [],
+            maxResults: data.maxResults || 25,
         };
         if (!profile.userId || !profile.keywords?.length)
             continue;
         try {
-            const { count, duplicatesSkipped } = await runSearchPipeline(profile, genAI, db);
+            const { count, duplicatesSkipped } = await runSearchPipeline(profile, genAI, db, profile.maxResults);
             totalNew += count;
             totalDups += duplicatesSkipped;
             await profileDoc.ref.update({ lastSearchedAt: admin.firestore.FieldValue.serverTimestamp() });

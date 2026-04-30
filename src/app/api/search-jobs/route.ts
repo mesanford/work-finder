@@ -88,7 +88,7 @@ const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:f
 
 export async function POST(request: Request) {
   try {
-    const { keywords, projectTypes, companyTypes, companySizes } = await request.json();
+    const { keywords, projectTypes, companyTypes, companySizes, maxResults = 25 } = await request.json();
 
     if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
       return Response.json({ error: "At least one keyword is required" }, { status: 400 });
@@ -108,6 +108,8 @@ export async function POST(request: Request) {
     const companyFilter = companyTypes?.length ? `Prefer companies that are: ${companyTypes.join(", ")}.` : "";
     const sizeFilter = companySizes?.length ? `Prefer company sizes: ${companySizes.join(", ")} employees.` : "";
 
+    const target = Math.min(Math.max(maxResults, 10), 100);
+
     const prompt = `Search for real, currently open job postings and contract opportunities where COMPANIES ARE HIRING for these skills:
 
 Keywords: ${keywords.join(", ")}
@@ -115,7 +117,7 @@ ${typeFilter}
 ${companyFilter}
 ${sizeFilter}
 
-Find 5-8 demand-side opportunities (companies seeking contractors, NOT freelancers offering services).
+Find up to ${target} demand-side opportunities (companies seeking contractors, NOT freelancers offering services).
 Exclude supply-side platforms: ${SUPPLY_EXCLUSIONS}
 
 CRITICAL URL RULES — each link MUST:

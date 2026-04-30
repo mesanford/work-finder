@@ -16,7 +16,7 @@ import LeadCard from "@/components/LeadCard";
 import SearchProfileSidebar from "@/components/SearchProfileSidebar";
 import {
   Search, Loader2, Plus, Filter, LogOut, ChevronLeft,
-  ChevronRight, X, Briefcase, ArrowUpDown, BookOpen, Link as LinkIcon, Sparkles,
+  ChevronRight, X, Briefcase, ArrowUpDown, BookOpen, Link as LinkIcon, Sparkles, CheckCircle2,
 } from "lucide-react";
 import { PIPELINE_STAGES, SORT_OPTIONS, type SortKey } from "@/lib/pipeline";
 
@@ -44,6 +44,8 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchFeedback, setSearchFeedback] = useState("");
+  const [searchStage, setSearchStage] = useState(0);
+  const [maxResults, setMaxResults] = useState(25);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [sortBy, setSortBy] = useState<SortKey>("date_desc");
@@ -182,6 +184,23 @@ export default function Dashboard() {
   }, [leads]);
 
   // Leads needing follow-up: proposal_sent + proposalSentAt > 7 days ago
+  const SEARCH_STAGES = [
+    "Building your contractor profile from knowledge base…",
+    "Generating targeted search queries…",
+    "Searching job boards and opportunity sources…",
+    "Validating links and filtering results…",
+    "Ranking results by fit…",
+  ];
+
+  useEffect(() => {
+    if (!isSearching) { setSearchStage(0); return; }
+    setSearchStage(0);
+    const interval = setInterval(() => {
+      setSearchStage((s) => (s < SEARCH_STAGES.length - 1 ? s + 1 : s));
+    }, 6000);
+    return () => clearInterval(interval);
+  }, [isSearching]);
+
   const followUpCount = useMemo(() => {
     return leads.filter((l) => {
       if (l.status !== "proposal_sent") return false;
@@ -200,7 +219,7 @@ export default function Dashboard() {
     try {
       const functions = getFunctions();
       const searchProjectsFn = httpsCallable(functions, "searchProjects");
-      const result: any = await searchProjectsFn({ query: searchQuery });
+      const result: any = await searchProjectsFn({ query: searchQuery, maxResults });
       const { count, duplicatesSkipped } = result.data;
       setSearchFeedback(
         `Found ${count} new lead${count !== 1 ? "s" : ""}${
@@ -213,7 +232,7 @@ export default function Dashboard() {
       setSearchFeedback("Search failed. Check your API key configuration.");
     } finally {
       setIsSearching(false);
-      setTimeout(() => setSearchFeedback(""), 5000);
+      setTimeout(() => setSearchFeedback(""), 8000);
     }
   };
 
@@ -287,6 +306,7 @@ export default function Dashboard() {
             keywords: profile.keywords,
             projectTypes: profile.projectTypes,
             companyTypes: profile.companyTypes,
+            maxResults: profile.maxResults ?? 25,
           });
           totalNew += result.data.count || 0;
           totalDups += result.data.duplicatesSkipped || 0;
@@ -307,6 +327,7 @@ export default function Dashboard() {
               projectTypes: profile.projectTypes,
               companyTypes: profile.companyTypes,
               companySizes: profile.companySizes,
+              maxResults: profile.maxResults ?? 25,
             }),
           });
 
@@ -485,6 +506,22 @@ export default function Dashboard() {
           <main className="flex-1 min-w-0">
             {/* Search bar */}
             <form onSubmit={handleSearch} className={showUrlImport ? "mb-2" : "mb-4"}>
+              <div className="flex gap-2 mb-2">
+                {[10, 25, 50, 100].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setMaxResults(n)}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                      maxResults === n
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-white text-gray-500 border-gray-300 hover:border-blue-300"
+                    }`}
+                  >
+                    {n} results
+                  </button>
+                ))}
+              </div>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -502,7 +539,7 @@ export default function Dashboard() {
                   className="px-5 py-2.5 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 disabled:bg-blue-300 flex items-center gap-2 text-sm transition-colors"
                 >
                   {isSearching ? <Loader2 className="animate-spin" size={16} /> : <Plus size={16} />}
-                  Search
+                  {isSearching ? "Searching…" : "Search"}
                 </button>
                 <button
                   type="button"
@@ -553,17 +590,34 @@ export default function Dashboard() {
               </form>
             )}
 
-            {/* Search feedback */}
-            {searchFeedback && (
-              <div className={`mb-4 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 ${
-                searchFeedback.includes("failed")
-                  ? "bg-red-50 text-red-700 border border-red-200"
-                  : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+            {/* Search progress / feedback banner */}
+            {(isSearching || searchFeedback) && (
+              <div className={`mb-4 px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-3 border transition-all ${
+                isSearching
+                  ? "bg-blue-50 text-blue-800 border-blue-200"
+                  : searchFeedback.includes("failed") || searchFeedback.includes("error")
+                  ? "bg-red-50 text-red-700 border-red-200"
+                  : "bg-emerald-50 text-emerald-800 border-emerald-200"
               }`}>
-                {searchFeedback}
-                <button onClick={() => setSearchFeedback("")} className="ml-auto">
-                  <X size={14} />
-                </button>
+                {isSearching ? (
+                  <>
+                    <Loader2 className="animate-spin shrink-0" size={16} />
+                    <span className="flex-1">{SEARCH_STAGES[searchStage]}</span>
+                    <span className="text-blue-400 text-xs font-normal tabular-nums">
+                      {searchStage + 1}/{SEARCH_STAGES.length}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    {!searchFeedback.includes("failed") && !searchFeedback.includes("error") && (
+                      <CheckCircle2 className="shrink-0" size={16} />
+                    )}
+                    <span className="flex-1">{searchFeedback}</span>
+                    <button onClick={() => setSearchFeedback("")} className="ml-auto shrink-0 opacity-60 hover:opacity-100">
+                      <X size={14} />
+                    </button>
+                  </>
+                )}
               </div>
             )}
 

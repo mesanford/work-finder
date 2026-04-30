@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { X, Plus, Trash2 } from "lucide-react";
 
+const MAX_RESULTS_OPTIONS = [10, 25, 50, 100];
+
 interface SearchProfile {
   id?: string;
   name: string;
@@ -11,6 +13,7 @@ interface SearchProfile {
   companySizes: string[];
   projectTypes: string[];
   sources: string[];
+  maxResults?: number;
 }
 
 const COMPANY_TYPE_OPTIONS = [
@@ -45,6 +48,7 @@ export default function SearchProfileModal({ isOpen, onClose, onSave, editProfil
   const [companySizes, setCompanySizes] = useState<string[]>([]);
   const [projectTypes, setProjectTypes] = useState<string[]>([]);
   const [sources, setSources] = useState<string[]>(["google_search"]);
+  const [maxResults, setMaxResults] = useState(25);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -55,6 +59,7 @@ export default function SearchProfileModal({ isOpen, onClose, onSave, editProfil
       setCompanySizes(editProfile.companySizes || []);
       setProjectTypes(editProfile.projectTypes || []);
       setSources(editProfile.sources || ["google_search"]);
+      setMaxResults(editProfile.maxResults || 25);
     } else {
       setName("");
       setKeywords([]);
@@ -62,6 +67,7 @@ export default function SearchProfileModal({ isOpen, onClose, onSave, editProfil
       setCompanySizes([]);
       setProjectTypes([]);
       setSources(["google_search"]);
+      setMaxResults(25);
     }
   }, [editProfile, isOpen]);
 
@@ -100,6 +106,7 @@ export default function SearchProfileModal({ isOpen, onClose, onSave, editProfil
         companySizes,
         projectTypes,
         sources,
+        maxResults,
       });
       onClose();
     } catch (err) {
@@ -252,6 +259,30 @@ export default function SearchProfileModal({ isOpen, onClose, onSave, editProfil
                   />
                   <span className="text-sm text-gray-700">{src.label}</span>
                 </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Max Results */}
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">
+              Max Results per Search
+            </label>
+            <p className="text-xs text-gray-400 mb-2">Higher values run more queries and take longer.</p>
+            <div className="flex gap-2">
+              {MAX_RESULTS_OPTIONS.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setMaxResults(n)}
+                  className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                    maxResults === n
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "bg-white text-gray-600 border-gray-300 hover:border-blue-300"
+                  }`}
+                >
+                  {n}
+                </button>
               ))}
             </div>
           </div>

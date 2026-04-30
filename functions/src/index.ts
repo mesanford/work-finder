@@ -115,15 +115,20 @@ interface SearchProfile {
   keywords?: string[];
   projectTypes?: string[];
   companyTypes?: string[];
+  maxResults?: number;
 }
 
 async function runSearchPipeline(
   profile: SearchProfile,
   genAI: GoogleGenerativeAI,
-  db: admin.firestore.Firestore
+  db: admin.firestore.Firestore,
+  maxResults = 25
 ): Promise<{ count: number; duplicatesSkipped: number }> {
   const { userId, keywords = [], projectTypes = [], companyTypes = [] } = profile;
   const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  // Scale query count to hit maxResults; URL validation drops ~50%, so aim for 2× raw
+  const numQueries = Math.min(Math.ceil(maxResults / 5), 20);
+  const perQuery = Math.ceil((maxResults * 2) / numQueries);
   const noThinkConfig: any = { thinkingConfig: { thinkingBudget: 0 } };
   const searchTools = [{ googleSearch: {} } as any];
 
@@ -161,15 +166,16 @@ Search criteria:
 ${typeFilter}
 ${companyFilter}
 
-Generate 4-6 Google search queries that will find DEMAND-SIDE opportunities only — companies, agencies, or governments seeking to hire or contract this person's services.
+Generate exactly ${numQueries} Google search queries that will find DEMAND-SIDE opportunities only — companies, agencies, or governments seeking to hire or contract this person's services.
 
 Rules:
 - Every query must be from the buyer's perspective ("hiring", "seeking", "RFP", "contract opportunity", "statement of work")
 - Append these exclusions to every query: ${SUPPLY_EXCLUSIONS}
 - Vary query structure: mix job boards (site:linkedin.com/jobs), government sources (site:sam.gov), and open web
+- Use different angles: some by skill, some by industry vertical, some by project type, some by geography
 - Tailor queries to the contractor's specific stack and seniority from the profile above
 
-Return ONLY a JSON array of strings.`;
+Return ONLY a JSON array of exactly ${numQueries} strings.`;
 
     try {
       const queryGenResult = await generateWithBackoff(genAI, models, [], queryGenPrompt, noThinkConfig, 2);
@@ -191,6 +197,8 @@ Return ONLY a JSON array of strings.`;
         models,
         searchTools,
         `Search for currently open individual job postings and contract opportunities matching: "${q}"
+
+Find up to ${perQuery} results.
 
 CRITICAL URL RULES — each link MUST:
 - Point to a single, specific job listing page (e.g. linkedin.com/jobs/view/1234567890, indeed.com/viewjob?jk=abc, lever.co/company/job-title)
@@ -308,7 +316,7 @@ Rules:
 }
 
 export const searchProjects = onCall({ secrets: [GEMINI_API_KEY], timeoutSeconds: 300 }, async (request) => {
-  const { query, keywords, projectTypes, companyTypes, userId } = request.data;
+  const { query, keywords, projectTypes, companyTypes, userId, maxResults } = request.data;
 
   const searchKeywords: string[] = keywords || (query ? [query] : []);
   if (searchKeywords.length === 0) {
@@ -326,7 +334,8 @@ export const searchProjects = onCall({ secrets: [GEMINI_API_KEY], timeoutSeconds
   const { count, duplicatesSkipped } = await runSearchPipeline(
     { userId: targetUserId, keywords: searchKeywords, projectTypes, companyTypes },
     genAI,
-    db
+    db,
+    Math.min(Math.max(maxResults || 25, 10), 100)
   );
 
   return { success: true, count, duplicatesSkipped };
@@ -355,12 +364,13 @@ export const scheduledDailySearch = onSchedule(
         keywords: data.keywords || [],
         projectTypes: data.projectTypes || [],
         companyTypes: data.companyTypes || [],
+        maxResults: data.maxResults || 25,
       };
 
       if (!profile.userId || !profile.keywords?.length) continue;
 
       try {
-        const { count, duplicatesSkipped } = await runSearchPipeline(profile, genAI, db);
+        const { count, duplicatesSkipped } = await runSearchPipeline(profile, genAI, db, profile.maxResults);
         totalNew += count;
         totalDups += duplicatesSkipped;
         await profileDoc.ref.update({ lastSearchedAt: admin.firestore.FieldValue.serverTimestamp() });
