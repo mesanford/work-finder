@@ -95,7 +95,7 @@ const GEMINI_API_KEY = (0, params_1.defineSecret)("GEMINI_API_KEY");
 const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will"`;
 async function runSearchPipeline(profile, genAI, db) {
     const { userId, keywords = [], projectTypes = [], companyTypes = [] } = profile;
-    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+    const models = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
     const noThinkConfig = { thinkingConfig: { thinkingBudget: 0 } };
     const searchTools = [{ googleSearch: {} }];
     // Stage 1: KB Profile Build
@@ -308,7 +308,7 @@ exports.processLeadOnCreate = (0, firestore_1.onDocumentCreated)({ document: "le
     if (data.status !== "new")
         return;
     const genAI = new generative_ai_1.GoogleGenerativeAI(GEMINI_API_KEY.value());
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const processModels = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
     // If reranking already set priority and projectType, only extract skills and contact methods
     const alreadyScored = data.priority != null && data.projectType != null;
     const prompt = alreadyScored
@@ -336,7 +336,7 @@ Extract and summarize the following in JSON format:
 
 Output ONLY valid JSON.`;
     try {
-        const result = await model.generateContent(prompt);
+        const result = await generateWithBackoff(genAI, processModels, [], prompt, {}, 2);
         const responseText = result.response.text();
         const jsonString = responseText.replace(/```json|```/g, "").trim();
         const processedInfo = JSON.parse(jsonString);

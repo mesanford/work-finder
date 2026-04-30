@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const MODELS = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const isRetryable = (err: any) => {
   const msg = err?.message || "";

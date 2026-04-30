@@ -1,5 +1,37 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+const MODELS = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const isRetryable = (err: any) => {
+  const msg = err?.message || "";
+  const status = err?.status || err?.response?.status;
+  return msg.includes("429") || msg.includes("503") || status === 429 || status === 503;
+};
+const skipModel = (err: any) => {
+  const msg = err?.message || "";
+  return msg.includes("404") || msg.includes("not found");
+};
+
+async function generateWithFallback(apiKey: string, prompt: string): Promise<string> {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  let lastError: any;
+  for (const modelName of MODELS) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+      } catch (err: any) {
+        lastError = err;
+        if (skipModel(err)) break;
+        if (!isRetryable(err)) throw err;
+        if (attempt === 0) await sleep(2000 + Math.random() * 1000);
+      }
+    }
+  }
+  throw lastError;
+}
+
 export async function POST(request: Request) {
   try {
     const { url, title, companyInfo } = await request.json();
@@ -12,9 +44,6 @@ export async function POST(request: Request) {
     if (!apiKey) {
       return Response.json({ error: "Gemini API key is not configured" }, { status: 500 });
     }
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const prompt = `You are a business intelligence assistant. Given the following lead information, research and infer the best contact methods.
 
@@ -34,8 +63,7 @@ Based on the URL domain and company name, provide your best inference for contac
 
 Only include fields you have reasonable confidence in. For the webForm, construct it from the URL domain (e.g., https://example.com/contact). For LinkedIn, construct a search URL like https://www.linkedin.com/company/COMPANY-NAME if a company name is available.`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
+    const text = await generateWithFallback(apiKey, prompt);
     const jsonString = text.replace(/```json|```/g, "").trim();
     const contactMethods = JSON.parse(jsonString);
 

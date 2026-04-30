@@ -110,7 +110,7 @@ async function runSearchPipeline(
   db: admin.firestore.Firestore
 ): Promise<{ count: number; duplicatesSkipped: number }> {
   const { userId, keywords = [], projectTypes = [], companyTypes = [] } = profile;
-  const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  const models = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
   const noThinkConfig: any = { thinkingConfig: { thinkingBudget: 0 } };
   const searchTools = [{ googleSearch: {} } as any];
 
@@ -368,7 +368,7 @@ export const processLeadOnCreate = onDocumentCreated({ document: "leads/{leadId}
   if (data.status !== "new") return;
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const processModels = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
 
   // If reranking already set priority and projectType, only extract skills and contact methods
   const alreadyScored = data.priority != null && data.projectType != null;
@@ -399,7 +399,7 @@ Extract and summarize the following in JSON format:
 Output ONLY valid JSON.`;
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await generateWithBackoff(genAI, processModels, [], prompt, {}, 2);
     const responseText = result.response.text();
     const jsonString = responseText.replace(/```json|```/g, "").trim();
     const processedInfo = JSON.parse(jsonString);
