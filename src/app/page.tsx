@@ -65,10 +65,21 @@ export default function Dashboard() {
       orderBy("createdAt", "desc")
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const leadsData = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
+      const stringify = (v: any) => {
+        if (!v) return null;
+        if (typeof v === "string") return v;
+        if (typeof v === "object") return v.name || v.type || v.label || JSON.stringify(v);
+        return String(v);
+      };
+      const leadsData = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          companyInfo: stringify(data.companyInfo),
+          projectType: stringify(data.projectType),
+        };
+      });
       setLeads(leadsData);
     });
 
@@ -87,9 +98,15 @@ export default function Dashboard() {
       // Text search (title, company, description, skills)
       if (filters.textSearch.trim()) {
         const q = filters.textSearch.toLowerCase();
+        const stringify = (v: any) => {
+          if (!v) return "";
+          if (typeof v === "string") return v;
+          if (typeof v === "object") return v.name || v.type || v.label || JSON.stringify(v);
+          return String(v);
+        };
         const haystack = [
-          lead.title, lead.companyInfo, lead.description,
-          lead.snippet, lead.projectType,
+          lead.title, stringify(lead.companyInfo), lead.description,
+          lead.snippet, stringify(lead.projectType),
           ...(lead.keySkills || []),
         ]
           .filter(Boolean)
@@ -102,6 +119,12 @@ export default function Dashboard() {
 
     // Sort
     result.sort((a, b) => {
+      const stringify = (v: any) => {
+        if (!v) return "";
+        if (typeof v === "string") return v;
+        if (typeof v === "object") return v.name || v.type || v.label || JSON.stringify(v);
+        return String(v);
+      };
       switch (sortBy) {
         case "date_desc":
           return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
@@ -112,9 +135,9 @@ export default function Dashboard() {
         case "priority_asc":
           return (a.priority || 0) - (b.priority || 0);
         case "company_asc":
-          return (a.companyInfo || "").localeCompare(b.companyInfo || "");
+          return stringify(a.companyInfo).localeCompare(stringify(b.companyInfo));
         case "company_desc":
-          return (b.companyInfo || "").localeCompare(a.companyInfo || "");
+          return stringify(b.companyInfo).localeCompare(stringify(a.companyInfo));
         default:
           return 0;
       }

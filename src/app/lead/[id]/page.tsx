@@ -71,6 +71,15 @@ export default function LeadDetailPage() {
   /* Delete confirmation */
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  const renderMetaValue = (val: any) => {
+    if (!val) return "Unknown";
+    if (typeof val === "string") return val;
+    if (typeof val === "object") {
+      return val.name || val.type || val.label || JSON.stringify(val);
+    }
+    return String(val);
+  };
+
   /* ─── Knowledge Base listener ─── */
   useEffect(() => {
     if (!user) return;
@@ -374,11 +383,11 @@ export default function LeadDetailPage() {
               </div>
               <div>
                 <label className="text-[10px] font-bold text-gray-400 uppercase">Company</label>
-                <p className="text-sm text-gray-900 font-medium flex items-center gap-1.5 mt-0.5"><User size={13} className="text-gray-400" />{lead.companyInfo || "Unknown"}</p>
+                <p className="text-sm text-gray-900 font-medium flex items-center gap-1.5 mt-0.5"><User size={13} className="text-gray-400" />{renderMetaValue(lead.companyInfo)}</p>
               </div>
               <div>
                 <label className="text-[10px] font-bold text-gray-400 uppercase">Type</label>
-                <p className="text-sm text-gray-900 flex items-center gap-1.5 mt-0.5"><Briefcase size={13} className="text-gray-400" />{lead.projectType || "Unknown"}</p>
+                <p className="text-sm text-gray-900 flex items-center gap-1.5 mt-0.5"><Briefcase size={13} className="text-gray-400" />{renderMetaValue(lead.projectType)}</p>
               </div>
               <div>
                 <label className="text-[10px] font-bold text-gray-400 uppercase">Priority</label>

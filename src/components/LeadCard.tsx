@@ -80,6 +80,15 @@ export default function LeadCard({ lead }: LeadCardProps) {
     return "text-gray-300";
   };
 
+  const renderMetaValue = (val: any) => {
+    if (!val) return "Unknown";
+    if (typeof val === "string") return val;
+    if (typeof val === "object") {
+      return val.name || val.type || val.label || JSON.stringify(val);
+    }
+    return String(val);
+  };
+
   const sourceIcon = lead.source === "job_board"
     ? <Laptop size={12} className="text-violet-500" />
     : <Globe size={12} className="text-emerald-500" />;
@@ -161,11 +170,11 @@ export default function LeadCard({ lead }: LeadCardProps) {
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1">
               <Briefcase size={12} />
-              {lead.projectType || "Unknown"}
+              {renderMetaValue(lead.projectType)}
             </span>
             <span className="flex items-center gap-1">
               <User size={12} />
-              <span className="truncate max-w-[90px]">{lead.companyInfo || "Unknown"}</span>
+              <span className="truncate max-w-[90px]">{renderMetaValue(lead.companyInfo)}</span>
             </span>
           </div>
           <div className="flex items-center gap-2">
