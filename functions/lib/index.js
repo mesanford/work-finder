@@ -42,6 +42,15 @@ generationConfig = {}, maxRetries = 2) {
     }
     throw lastError;
 }
+async function runConcurrent(tasks, limit) {
+    const results = [];
+    for (let i = 0; i < tasks.length; i += limit) {
+        const chunk = tasks.slice(i, i + limit);
+        const chunkResults = await Promise.allSettled(chunk.map((t) => t()));
+        results.push(...chunkResults);
+    }
+    return results;
+}
 function parseJsonArray(text) {
     const start = text.indexOf("[");
     const end = text.lastIndexOf("]");
@@ -95,7 +104,7 @@ const GEMINI_API_KEY = (0, params_1.defineSecret)("GEMINI_API_KEY");
 const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will"`;
 async function runSearchPipeline(profile, genAI, db) {
     const { userId, keywords = [], projectTypes = [], companyTypes = [] } = profile;
-    const models = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
+    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
     const noThinkConfig = { thinkingConfig: { thinkingBudget: 0 } };
     const searchTools = [{ googleSearch: {} }];
     // Stage 1: KB Profile Build
@@ -149,8 +158,8 @@ Return ONLY a JSON array of strings.`;
     if (queries.length === 0) {
         queries = [`${keywords.join(" ")} contract opportunity hiring ${SUPPLY_EXCLUSIONS}`];
     }
-    // Stage 3: Parallel Grounded Search + URL Validation
-    const searchResults = await Promise.allSettled(queries.map((q) => generateWithBackoff(genAI, models, searchTools, `Search for currently open individual job postings and contract opportunities matching: "${q}"
+    // Stage 3: Concurrency-limited grounded search (2 at a time to stay within RPM)
+    const searchResults = await runConcurrent(queries.map((q) => () => generateWithBackoff(genAI, models, searchTools, `Search for currently open individual job postings and contract opportunities matching: "${q}"
 
 CRITICAL URL RULES — each link MUST:
 - Point to a single, specific job listing page (e.g. linkedin.com/jobs/view/1234567890, indeed.com/viewjob?jk=abc, lever.co/company/job-title)
@@ -163,7 +172,7 @@ Return ONLY a valid JSON array of objects with:
 - snippet: A 1-2 sentence description
 
 If you cannot find a verified deep link to an individual posting, omit that result entirely.
-Return ONLY the JSON array.`, noThinkConfig, 2)));
+Return ONLY the JSON array.`, noThinkConfig, 2)), 2);
     const seen = new Set();
     const allItems = [];
     for (const result of searchResults) {
@@ -308,7 +317,7 @@ exports.processLeadOnCreate = (0, firestore_1.onDocumentCreated)({ document: "le
     if (data.status !== "new")
         return;
     const genAI = new generative_ai_1.GoogleGenerativeAI(GEMINI_API_KEY.value());
-    const processModels = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
+    const processModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
     // If reranking already set priority and projectType, only extract skills and contact methods
     const alreadyScored = data.priority != null && data.projectType != null;
     const prompt = alreadyScored

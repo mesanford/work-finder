@@ -44,6 +44,19 @@ async function generateWithBackoff(
   throw lastError;
 }
 
+async function runConcurrent<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number
+): Promise<PromiseSettledResult<T>[]> {
+  const results: PromiseSettledResult<T>[] = [];
+  for (let i = 0; i < tasks.length; i += limit) {
+    const chunk = tasks.slice(i, i + limit);
+    const chunkResults = await Promise.allSettled(chunk.map((t) => t()));
+    results.push(...chunkResults);
+  }
+  return results;
+}
+
 function parseJsonArray(text: string): any[] {
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
@@ -110,7 +123,7 @@ async function runSearchPipeline(
   db: admin.firestore.Firestore
 ): Promise<{ count: number; duplicatesSkipped: number }> {
   const { userId, keywords = [], projectTypes = [], companyTypes = [] } = profile;
-  const models = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
+  const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const noThinkConfig: any = { thinkingConfig: { thinkingBudget: 0 } };
   const searchTools = [{ googleSearch: {} } as any];
 
@@ -170,9 +183,9 @@ Return ONLY a JSON array of strings.`;
     queries = [`${keywords.join(" ")} contract opportunity hiring ${SUPPLY_EXCLUSIONS}`];
   }
 
-  // Stage 3: Parallel Grounded Search + URL Validation
-  const searchResults = await Promise.allSettled(
-    queries.map((q) =>
+  // Stage 3: Concurrency-limited grounded search (2 at a time to stay within RPM)
+  const searchResults = await runConcurrent(
+    queries.map((q) => () =>
       generateWithBackoff(
         genAI,
         models,
@@ -194,7 +207,8 @@ Return ONLY the JSON array.`,
         noThinkConfig,
         2
       )
-    )
+    ),
+    2
   );
 
   const seen = new Set<string>();
@@ -368,7 +382,7 @@ export const processLeadOnCreate = onDocumentCreated({ document: "leads/{leadId}
   if (data.status !== "new") return;
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
-  const processModels = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
+  const processModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
   // If reranking already set priority and projectType, only extract skills and contact methods
   const alreadyScored = data.priority != null && data.projectType != null;

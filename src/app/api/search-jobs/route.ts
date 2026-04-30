@@ -101,7 +101,7 @@ export async function POST(request: Request) {
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const searchTools = [{ googleSearch: {} } as any];
-    const models = ["gemini-2.5-flash", "gemma-4-27b-it", "gemini-2.5-flash-lite"];
+    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
     const noThinkConfig = { thinkingConfig: { thinkingBudget: 0 } };
 
     const typeFilter = projectTypes?.length ? `Focus on these types: ${projectTypes.join(", ")}.` : "";
