@@ -226,16 +226,16 @@ export default function Dashboard() {
             // Save new jobs to Firestore as leads
             for (const job of newJobs) {
               await addDoc(collection(db, "leads"), {
-                title: job.title,
-                link: job.link,
-                snippet: job.snippet,
+                title: job.title || "Untitled Job",
+                link: job.link || "",
+                snippet: job.snippet || "",
                 source: "job_board",
                 status: "new",
                 userId: user.uid,
-                companyInfo: job.company,
-                projectType: job.projectType,
+                companyInfo: job.company || null,
+                projectType: job.projectType || null,
                 createdAt: serverTimestamp(),
-                query: profile.keywords.join(", "),
+                query: (profile.keywords || []).join(", "),
               });
             }
 

@@ -4,11 +4,45 @@ import * as admin from "firebase-admin";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { defineSecret } from "firebase-functions/params"; // v2
 
+const RETRYABLE = (err: any) => {
+  const msg = err?.message || "";
+  const status = err?.status || err?.response?.status;
+  return msg.includes("429") || msg.includes("503") || status === 429 || status === 503;
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function generateWithBackoff(
+  genAI: GoogleGenerativeAI,
+  models: string[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tools: any[],
+  prompt: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  generationConfig: any = {},
+  maxRetries = 2
+) {
+  let lastError: any;
+  for (const modelName of models) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName, tools, generationConfig });
+        return await model.generateContent(prompt);
+      } catch (err: any) {
+        lastError = err;
+        if (!RETRYABLE(err)) throw err;
+        if (attempt < maxRetries - 1) await sleep(Math.pow(2, attempt) * 1000 + Math.random() * 1000);
+      }
+    }
+  }
+  throw lastError;
+}
+
 admin.initializeApp();
 
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 
-export const searchProjects = onCall({ secrets: [GEMINI_API_KEY] }, async (request) => {
+export const searchProjects = onCall({ secrets: [GEMINI_API_KEY], timeoutSeconds: 300 }, async (request) => {
   const { query, keywords, projectTypes, companyTypes, userId } = request.data;
   
   // Support both direct query and profile-based search
@@ -26,24 +60,71 @@ export const searchProjects = onCall({ secrets: [GEMINI_API_KEY] }, async (reque
 
   try {
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      tools: [{ googleSearch: {} } as any],
-    });
+    const searchTools = [{ googleSearchRetrieval: {} } as any];
+    const models = [
+      "gemini-3.1-flash-preview",
+      "gemini-3-flash-preview", 
+      "gemini-2.0-flash",
+      "gemini-2.5-flash", 
+      "gemini-1.5-flash",
+      "gemini-1.5-flash-8b"
+    ];
+    // Disable thinking so grounding output isn't consumed by reasoning tokens
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const noThinkConfig: any = { thinkingConfig: { thinkingBudget: 0 } };
 
-    const prompt = `Search for project opportunities, contracts, RFPs, and job postings matching: "${searchQuery}".
-Return ONLY a valid JSON array of up to 10 results, each with:
-- title: the page or posting title
-- link: the full URL
-- snippet: a 1-2 sentence description
-Output ONLY the JSON array, no markdown.`;
+    let items: { title: string; link: string; snippet: string }[] = [];
+    let groundedText = "";
 
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
-    const jsonString = responseText.replace(/```json|```/g, "").trim();
-    const items: { title: string; link: string; snippet: string }[] =
-      JSON.parse(jsonString);
+    try {
+      // Step 1: grounded call with a search-focused prompt to get real URLs from Google Search
+      const groundingPrompt = `Search for specific, currently open job postings, contract opportunities, RFPs, and freelance projects matching: "${searchQuery}". 
+Focus on finding direct links to individual listings and postings, not general site homepages. 
+Return ONLY a valid JSON array of objects with these fields:
+- title: The job/project title
+- link: The direct URL to the specific posting (deep link)
+- snippet: A 1-2 sentence description
+
+Return ONLY the JSON array.`;
+
+      const groundedResult = await generateWithBackoff(
+        genAI, models, searchTools, groundingPrompt, noThinkConfig, 3
+      );
+
+      groundedText = groundedResult.response.text();
+      console.log("Grounded text length:", groundedText.length);
+
+      const start = groundedText.indexOf("[");
+      const end = groundedText.lastIndexOf("]");
+
+      if (start !== -1 && end > start) {
+        try {
+          items = JSON.parse(groundedText.slice(start, end + 1));
+        } catch (e) {
+          console.error("Failed to parse grounded JSON:", e);
+        }
+      }
+    } catch (searchError) {
+      console.error("Grounded search failed entirely after retries:", searchError);
+      // Continue to Step 2 fallback
+    }
+
+    if (items.length === 0) {
+      // Step 2 fallback: no JSON found, parse failed, or Step 1 crashed
+      console.log("Falling back to non-tool JSON call from knowledge base");
+      const jsonPrompt = `List up to 10 real job postings, contracts, or project platforms relevant to: "${searchQuery}".
+Return ONLY a JSON array, each item: { "title": "...", "link": "https://...", "snippet": "..." }`;
+      const fallbackResult = await generateWithBackoff(
+        genAI, models, [], jsonPrompt, noThinkConfig, 3
+      );
+      const text = fallbackResult.response.text();
+      const fStart = text.indexOf("[");
+      const fEnd = text.lastIndexOf("]");
+      if (fStart === -1 || fEnd <= fStart) {
+        throw new HttpsError("internal", `Search returned no results. Response: ${text.slice(0, 200)}`);
+      }
+      items = JSON.parse(text.slice(fStart, fEnd + 1));
+    }
     const leadsCollection = admin.firestore().collection("leads");
 
     // Fetch existing links for this user to deduplicate
@@ -62,17 +143,17 @@ Output ONLY the JSON array, no markdown.`;
 
       const docRef = leadsCollection.doc();
       batch.set(docRef, {
-        title: item.title,
-        link: item.link,
-        snippet: item.snippet,
+        title: item.title || searchQuery,
+        link: item.link || "",
+        snippet: item.snippet || "",
         source: "google_search",
         status: "new",
         userId: targetUserId,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         query: searchQuery,
         // Include profile metadata if available
-        projectType: projectTypes ? projectTypes[0] : null,
-        companyInfo: companyTypes ? companyTypes[0] : null,
+        projectType: (projectTypes && projectTypes.length > 0) ? projectTypes[0] : null,
+        companyInfo: (companyTypes && companyTypes.length > 0) ? companyTypes[0] : null,
       });
       count++;
     });
@@ -97,7 +178,7 @@ export const processLeadOnCreate = onDocumentCreated({ document: "leads/{leadId}
   if (data.status !== "new") return;
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
 
   const prompt = `
     Analyze the following lead information extracted from a search result:
