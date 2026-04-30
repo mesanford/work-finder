@@ -27,6 +27,7 @@ interface FilterState {
   source: string;
   minPriority: number;
   textSearch: string;
+  followUpOnly: boolean;
 }
 
 const DEFAULT_FILTERS: FilterState = {
@@ -34,6 +35,7 @@ const DEFAULT_FILTERS: FilterState = {
   source: "all",
   minPriority: 0,
   textSearch: "",
+  followUpOnly: false,
 };
 
 export default function Dashboard() {
@@ -95,6 +97,13 @@ export default function Dashboard() {
       if (filters.source !== "all" && lead.source !== filters.source) return false;
       // Priority filter
       if (filters.minPriority > 0 && (lead.priority || 0) < filters.minPriority) return false;
+      // Follow-up filter: proposal_sent leads where proposalSentAt > 7 days ago
+      if (filters.followUpOnly) {
+        if (lead.status !== "proposal_sent") return false;
+        const sentSeconds = lead.proposalSentAt?.seconds || 0;
+        const daysSince = (Date.now() - sentSeconds * 1000) / 86400000;
+        if (daysSince < 7) return false;
+      }
       // Text search (title, company, description, skills)
       if (filters.textSearch.trim()) {
         const q = filters.textSearch.toLowerCase();
@@ -165,6 +174,15 @@ export default function Dashboard() {
       counts[s.key] = leads.filter((l) => (l.status || "new") === s.key).length;
     }
     return counts;
+  }, [leads]);
+
+  // Leads needing follow-up: proposal_sent + proposalSentAt > 7 days ago
+  const followUpCount = useMemo(() => {
+    return leads.filter((l) => {
+      if (l.status !== "proposal_sent") return false;
+      const sentSeconds = l.proposalSentAt?.seconds || 0;
+      return (Date.now() - sentSeconds * 1000) / 86400000 >= 7;
+    }).length;
   }, [leads]);
 
   // Free-text Google search
@@ -457,6 +475,18 @@ export default function Dashboard() {
                     ({filteredAndSorted.length}{filteredAndSorted.length !== leads.length ? ` of ${leads.length}` : ""})
                   </span>
                 </h2>
+                {followUpCount > 0 && (
+                  <button
+                    onClick={() => setFilters({ ...DEFAULT_FILTERS, followUpOnly: !filters.followUpOnly })}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                      filters.followUpOnly
+                        ? "bg-amber-100 text-amber-800 border-amber-300"
+                        : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+                    }`}
+                  >
+                    ⏰ Follow up ({followUpCount})
+                  </button>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {/* Sort */}

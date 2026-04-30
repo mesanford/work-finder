@@ -6,7 +6,7 @@ import {
   Globe, Laptop, StickyNote, Archive, Trash2, ChevronDown,
 } from "lucide-react";
 import Link from "next/link";
-import { doc, updateDoc, deleteDoc } from "firebase/firestore";
+import { doc, updateDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { PIPELINE_STAGES, getStage } from "@/lib/pipeline";
 
@@ -22,6 +22,7 @@ interface Lead {
   companyInfo?: string;
   priority?: number;
   matchReason?: string;
+  proposalSentAt?: any;
   source?: string;
   notes?: string;
   createdAt: any;
@@ -52,7 +53,11 @@ export default function LeadCard({ lead }: LeadCardProps) {
   const updateStatus = async (newStatus: string) => {
     setStatusOpen(false);
     try {
-      await updateDoc(doc(db, "leads", lead.id), { status: newStatus });
+      const update: Record<string, any> = { status: newStatus };
+      if (newStatus === "proposal_sent" && !lead.proposalSentAt) {
+        update.proposalSentAt = serverTimestamp();
+      }
+      await updateDoc(doc(db, "leads", lead.id), update);
     } catch (err) {
       console.error("Failed to update status:", err);
     }
@@ -191,6 +196,14 @@ export default function LeadCard({ lead }: LeadCardProps) {
                 <StickyNote size={11} />
               </span>
             )}
+            {lead.status === "proposal_sent" && lead.proposalSentAt?.seconds && (() => {
+              const days = Math.floor((Date.now() - lead.proposalSentAt.seconds * 1000) / 86400000);
+              return days > 0 ? (
+                <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded-full ${days >= 7 ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-500"}`} title="Days since proposal sent">
+                  {days}d
+                </span>
+              ) : null;
+            })()}
             <span className="flex items-center gap-1">
               {sourceIcon}
               {sourceLabel}

@@ -1,5 +1,6 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { defineSecret } from "firebase-functions/params"; // v2
@@ -75,20 +76,20 @@ const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 
 const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will"`;
 
-export const searchProjects = onCall({ secrets: [GEMINI_API_KEY], timeoutSeconds: 300 }, async (request) => {
-  const { query, keywords, projectTypes, companyTypes, userId } = request.data;
+interface SearchProfile {
+  id?: string;
+  userId: string;
+  keywords?: string[];
+  projectTypes?: string[];
+  companyTypes?: string[];
+}
 
-  const searchKeywords: string[] = keywords || (query ? [query] : []);
-  if (searchKeywords.length === 0) {
-    throw new HttpsError("invalid-argument", "Query or keywords are required");
-  }
-
-  const targetUserId = userId || request.auth?.uid;
-  if (!targetUserId) {
-    throw new HttpsError("unauthenticated", "User must be authenticated");
-  }
-
-  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
+async function runSearchPipeline(
+  profile: SearchProfile,
+  genAI: GoogleGenerativeAI,
+  db: admin.firestore.Firestore
+): Promise<{ count: number; duplicatesSkipped: number }> {
+  const { userId, keywords = [], projectTypes = [], companyTypes = [] } = profile;
   const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const noThinkConfig: any = { thinkingConfig: { thinkingBudget: 0 } };
   const searchTools = [{ googleSearch: {} } as any];
@@ -96,9 +97,9 @@ export const searchProjects = onCall({ secrets: [GEMINI_API_KEY], timeoutSeconds
   // Stage 1: KB Profile Build
   let profileText = "";
   try {
-    const kbSnap = await admin.firestore()
+    const kbSnap = await db
       .collection("knowledgeBase")
-      .where("userId", "==", targetUserId)
+      .where("userId", "==", userId)
       .where("type", "in", ["resume", "portfolio", "boilerplate"])
       .get();
 
@@ -113,9 +114,9 @@ export const searchProjects = onCall({ secrets: [GEMINI_API_KEY], timeoutSeconds
   // Stage 2: Query Generation
   let queries: string[] = [];
 
-  if (profileText) {
-    const typeFilter = projectTypes?.length ? `Project types: ${projectTypes.join(", ")}` : "";
-    const companyFilter = companyTypes?.length ? `Company types: ${companyTypes.join(", ")}` : "";
+  if (profileText && keywords.length > 0) {
+    const typeFilter = projectTypes.length ? `Project types: ${projectTypes.join(", ")}` : "";
+    const companyFilter = companyTypes.length ? `Company types: ${companyTypes.join(", ")}` : "";
 
     const queryGenPrompt = `You are helping a senior technology contractor find paid work opportunities.
 
@@ -123,7 +124,7 @@ Contractor profile:
 ${profileText}
 
 Search criteria:
-- Keywords: ${searchKeywords.join(", ")}
+- Keywords: ${keywords.join(", ")}
 ${typeFilter}
 ${companyFilter}
 
@@ -145,12 +146,11 @@ Return ONLY a JSON array of strings.`;
     }
   }
 
-  // Fallback: single keyword query with exclusions
   if (queries.length === 0) {
-    queries = [`${searchKeywords.join(" ")} contract opportunity hiring ${SUPPLY_EXCLUSIONS}`];
+    queries = [`${keywords.join(" ")} contract opportunity hiring ${SUPPLY_EXCLUSIONS}`];
   }
 
-  // Stage 3: Parallel Grounded Search
+  // Stage 3: Parallel Grounded Search + URL Validation
   const searchResults = await Promise.allSettled(
     queries.map((q) =>
       generateWithBackoff(
@@ -185,19 +185,14 @@ Return ONLY the JSON array.`,
     }
   }
 
-  console.log(`Raw items before validation: ${allItems.length}`);
-
-  // URL Validation — parallel HEAD checks
   const validationResults = await Promise.allSettled(allItems.map((item) => isLinkValid(item.link)));
   const validated = allItems.filter((_, i) => {
     const r = validationResults[i];
     return r.status === "fulfilled" && r.value;
   });
 
-  console.log(`Validated items: ${validated.length} of ${allItems.length}`);
-
   if (validated.length === 0) {
-    return { success: true, count: 0, duplicatesSkipped: 0, message: "No verified links found" };
+    return { count: 0, duplicatesSkipped: 0 };
   }
 
   // Stage 4: Reranking
@@ -233,15 +228,15 @@ Rules:
     }
   }
 
-  // Deduplicate against existing leads
-  const leadsCollection = admin.firestore().collection("leads");
-  const existingLeads = await leadsCollection.where("userId", "==", targetUserId).get();
-  const existingLinks = new Set(existingLeads.docs.map((doc) => doc.data().link));
+  // Deduplicate and save
+  const leadsCollection = db.collection("leads");
+  const existingLeads = await leadsCollection.where("userId", "==", userId).get();
+  const existingLinks = new Set(existingLeads.docs.map((d) => d.data().link));
 
   let count = 0;
   let duplicatesSkipped = 0;
 
-  const batch = admin.firestore().batch();
+  const batch = db.batch();
   for (const item of rankedItems) {
     if (!item.link || existingLinks.has(item.link)) {
       duplicatesSkipped++;
@@ -249,18 +244,18 @@ Rules:
     }
     const docRef = leadsCollection.doc();
     batch.set(docRef, {
-      title: item.title || searchKeywords.join(", "),
+      title: item.title || keywords.join(", "),
       link: item.link,
       snippet: item.snippet || "",
       source: "google_search",
       status: "new",
-      userId: targetUserId,
+      userId,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      query: searchKeywords.join(", "),
+      query: keywords.join(", "),
       priority: item.priority ?? null,
       matchReason: item.matchReason ?? null,
-      projectType: item.projectType ?? (projectTypes?.length ? projectTypes[0] : null),
-      companyInfo: item.companyInfo ?? (companyTypes?.length ? companyTypes[0] : null),
+      projectType: item.projectType ?? (projectTypes.length ? projectTypes[0] : null),
+      companyInfo: item.companyInfo ?? (companyTypes.length ? companyTypes[0] : null),
     });
     count++;
   }
@@ -269,8 +264,75 @@ Rules:
     await batch.commit();
   }
 
+  return { count, duplicatesSkipped };
+}
+
+export const searchProjects = onCall({ secrets: [GEMINI_API_KEY], timeoutSeconds: 300 }, async (request) => {
+  const { query, keywords, projectTypes, companyTypes, userId } = request.data;
+
+  const searchKeywords: string[] = keywords || (query ? [query] : []);
+  if (searchKeywords.length === 0) {
+    throw new HttpsError("invalid-argument", "Query or keywords are required");
+  }
+
+  const targetUserId = userId || request.auth?.uid;
+  if (!targetUserId) {
+    throw new HttpsError("unauthenticated", "User must be authenticated");
+  }
+
+  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
+  const db = admin.firestore();
+
+  const { count, duplicatesSkipped } = await runSearchPipeline(
+    { userId: targetUserId, keywords: searchKeywords, projectTypes, companyTypes },
+    genAI,
+    db
+  );
+
   return { success: true, count, duplicatesSkipped };
 });
+
+export const scheduledDailySearch = onSchedule(
+  { schedule: "every 24 hours", secrets: [GEMINI_API_KEY], timeoutSeconds: 540 },
+  async () => {
+    const db = admin.firestore();
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
+
+    const profilesSnap = await db.collection("searchProfiles").get();
+    if (profilesSnap.empty) {
+      console.log("No search profiles found, skipping scheduled search.");
+      return;
+    }
+
+    let totalNew = 0;
+    let totalDups = 0;
+
+    for (const profileDoc of profilesSnap.docs) {
+      const data = profileDoc.data();
+      const profile: SearchProfile = {
+        id: profileDoc.id,
+        userId: data.userId,
+        keywords: data.keywords || [],
+        projectTypes: data.projectTypes || [],
+        companyTypes: data.companyTypes || [],
+      };
+
+      if (!profile.userId || !profile.keywords?.length) continue;
+
+      try {
+        const { count, duplicatesSkipped } = await runSearchPipeline(profile, genAI, db);
+        totalNew += count;
+        totalDups += duplicatesSkipped;
+        await profileDoc.ref.update({ lastSearchedAt: admin.firestore.FieldValue.serverTimestamp() });
+        console.log(`Profile ${profileDoc.id} (${profile.userId}): +${count} leads, ${duplicatesSkipped} dups`);
+      } catch (err) {
+        console.error(`Failed to run pipeline for profile ${profileDoc.id}:`, err);
+      }
+    }
+
+    console.log(`Scheduled search complete: ${totalNew} new leads, ${totalDups} duplicates skipped.`);
+  }
+);
 
 export const processLeadOnCreate = onDocumentCreated({ document: "leads/{leadId}", secrets: [GEMINI_API_KEY] }, async (event) => {
   const snapshot = event.data;

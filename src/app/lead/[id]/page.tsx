@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
   doc, updateDoc, deleteDoc, onSnapshot,
-  collection, addDoc, query, orderBy, where, Timestamp,
+  collection, addDoc, query, orderBy, where, Timestamp, serverTimestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
@@ -14,7 +14,7 @@ import {
   StickyNote, Save, Archive, Trash2, ChevronRight,
   RotateCcw, Sparkles, Bot, UserCircle,
   Mail, Link2 as Linkedin, Phone, Globe2, Search, FileText,
-  BookOpen, ChevronDown, Database,
+  BookOpen, ChevronDown, Database, Download,
 } from "lucide-react";
 import Link from "next/link";
 import { PIPELINE_STAGES, getStage } from "@/lib/pipeline";
@@ -186,7 +186,12 @@ export default function LeadDetailPage() {
 
   /* ─── Pipeline & actions ─── */
   const updateStatus = async (s: string) => {
-    if (lead) await updateDoc(doc(db, "leads", lead.id), { status: s });
+    if (!lead) return;
+    const update: Record<string, any> = { status: s };
+    if (s === "proposal_sent" && !lead.proposalSentAt) {
+      update.proposalSentAt = serverTimestamp();
+    }
+    await updateDoc(doc(db, "leads", lead.id), update);
   };
   const archiveLead = async () => {
     if (lead) await updateDoc(doc(db, "leads", lead.id), { status: "archived" });
@@ -275,7 +280,10 @@ export default function LeadDetailPage() {
 
       // Auto-advance pipeline on first proposal
       if (chatMessages.length === 0 && ["new", "reviewing", "shortlisted"].includes(lead.status)) {
-        await updateDoc(doc(db, "leads", lead.id), { status: "proposal_sent" });
+        await updateDoc(doc(db, "leads", lead.id), {
+          status: "proposal_sent",
+          proposalSentAt: serverTimestamp(),
+        });
       }
     } catch (err: any) {
       setChatError(err.message || "Something went wrong.");
@@ -292,10 +300,30 @@ export default function LeadDetailPage() {
 
   const clearChat = async () => {
     if (!lead) return;
-    // Delete all messages in subcollection
     for (const msg of chatMessages) {
       if (msg.id) await deleteDoc(doc(db, "leads", lead.id, "chatMessages", msg.id));
     }
+  };
+
+  const copyLastProposal = () => {
+    const latest = getLatestProposal();
+    if (!latest) return;
+    navigator.clipboard.writeText(latest);
+    setCopied("__last__");
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  const downloadChatAsTxt = () => {
+    const lines = chatMessages.map((m) =>
+      `[${m.role === "user" ? "You" : "Assistant"}]\n${m.content}`
+    ).join("\n\n---\n\n");
+    const blob = new Blob([lines], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(lead?.title || "proposal").replace(/[^a-z0-9]/gi, "-").toLowerCase()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   /* ─── Loading / Error states ─── */
@@ -598,9 +626,19 @@ export default function LeadDetailPage() {
                   </button>
                 )}
                 {chatMessages.length > 0 && (
-                  <button onClick={clearChat} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-red-600 bg-white border border-gray-200 rounded-lg hover:bg-red-50 transition-colors">
-                    <RotateCcw size={12} /> Clear chat
-                  </button>
+                  <>
+                    <button onClick={copyLastProposal} title="Copy last proposal"
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-blue-600 bg-white border border-gray-200 rounded-lg hover:bg-blue-50 transition-colors">
+                      {copied === "__last__" ? <><Check size={12} className="text-green-600" /> Copied</> : <><Copy size={12} /> Copy</>}
+                    </button>
+                    <button onClick={downloadChatAsTxt} title="Download chat as .txt"
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+                      <Download size={12} /> Export
+                    </button>
+                    <button onClick={clearChat} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-red-600 bg-white border border-gray-200 rounded-lg hover:bg-red-50 transition-colors">
+                      <RotateCcw size={12} /> Clear
+                    </button>
+                  </>
                 )}
               </div>
             </div>
