@@ -1,5 +1,32 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const isRetryable = (err: any) => {
+  const msg = err?.message || "";
+  const status = err?.status || err?.response?.status;
+  return msg.includes("429") || msg.includes("503") || status === 429 || status === 503;
+};
+
+async function generateWithFallback(apiKey: string, prompt: string): Promise<string> {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  let lastError: any;
+  for (const modelName of MODELS) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+      } catch (err: any) {
+        lastError = err;
+        if (!isRetryable(err)) throw err;
+        if (attempt === 0) await sleep(2000 + Math.random() * 1000);
+      }
+    }
+  }
+  throw lastError;
+}
+
 function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -65,10 +92,6 @@ export async function POST(request: Request) {
       return Response.json({ error: "No readable content found at this URL" }, { status: 400 });
     }
 
-    // Use Gemini to extract structured KB content
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
     const prompt = `You are extracting knowledge base content from a web page for a freelance contractor's proposal tool.
 
 URL: ${url}
@@ -89,8 +112,7 @@ Extract the most useful information from this page and return a JSON object with
 
 Return ONLY valid JSON.`;
 
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text().replace(/```json|```/g, "").trim();
+    const responseText = (await generateWithFallback(apiKey, prompt)).replace(/```json|```/g, "").trim();
 
     let extracted: { title: string; type: string; content: string; tags: string[] };
     try {
