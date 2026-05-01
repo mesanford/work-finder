@@ -61,18 +61,33 @@ const SEARCH_PAGE_PATTERNS = [
   /\/vacancies\?/i,
   /\/positions\?/i,
   /\/jobs\?((?!id=|jk=|jobid=).)*$/i,
+  /\/career-search/i,
+  /\/all-jobs/i,
 ];
 
 function isSearchResultPage(url: string): boolean {
+  if (!url) return false;
+  // Deep link common patterns
+  if (url.includes("linkedin.com/jobs/view/")) return false;
+  if (url.includes("lever.co/") && url.split("/").length > 4) return false;
+  if (url.includes("greenhouse.io/") && url.includes("/jobs/")) return false;
+  
   return SEARCH_PAGE_PATTERNS.some((p) => p.test(url));
 }
 
 function isLinkValid(url: string): boolean {
   if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes("fiverr.com") || parsed.hostname.includes("freelancer.com")) return false;
+    if (parsed.pathname === "/" || parsed.pathname === "") return false;
+  } catch {
+    return false;
+  }
   return !isSearchResultPage(url);
 }
 
-const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will"`;
+const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will" -"hire me" -"looking for work"`;
 
 export async function POST(request: Request) {
   try {
@@ -88,49 +103,82 @@ export async function POST(request: Request) {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
+    const models = ["gemini-2.5-flash", "gemini-2.0-flash"]; // Added 2.0 as fallback
     const searchTools = [{ googleSearch: {} } as any];
-    const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
     const noThinkConfig = { thinkingConfig: { thinkingBudget: 0 } };
 
+    // --- STEP 1: QUERY EXPANSION ---
+    // Generate multiple specific search strategies to get more diverse results
+    const queryModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const expansionPrompt = `Given these keywords: ${keywords.join(", ")}
+And these preferences: ${projectTypes?.join(", ") || "None"}
+Generate 4 distinct, highly targeted Google Search queries to find DIRECT hiring opportunities.
+Mix strategies: 
+1. Direct company career sites (site:lever.co, site:greenhouse.io)
+2. Professional networks (LinkedIn, Indeed)
+3. Niche boards or industry specific sites
+4. Direct "hiring for" or "looking for" posts
+
+Output ONLY a JSON array of 4 strings.`;
+
+    const expansionResult = await queryModel.generateContent(expansionPrompt);
+    const expandedQueries = parseJsonArray(expansionResult.response.text());
+    const searchQueries = expandedQueries.length >= 3 ? expandedQueries : [keywords.join(" ")];
+
+    console.log("Expanding search with queries:", searchQueries);
+
+    // --- STEP 2: PARALLEL SEARCH ---
     const typeFilter = projectTypes?.length ? `Focus on these types: ${projectTypes.join(", ")}.` : "";
     const companyFilter = companyTypes?.length ? `Prefer companies that are: ${companyTypes.join(", ")}.` : "";
     const sizeFilter = companySizes?.length ? `Prefer company sizes: ${companySizes.join(", ")} employees.` : "";
 
-    const target = Math.min(Math.max(maxResults, 10), 100);
+    const searchTasks = searchQueries.map(async (query) => {
+      const prompt = `Search for currently open job postings for: ${query}
+Original Keywords: ${keywords.join(", ")}
+${typeFilter} ${companyFilter} ${sizeFilter}
 
-    const prompt = `Search for real, currently open job postings and contract opportunities where COMPANIES ARE HIRING for these skills:
+Find demand-side opportunities (companies HIRING, not service providers).
+Exclude: ${SUPPLY_EXCLUSIONS}
 
-Keywords: ${keywords.join(", ")}
-${typeFilter}
-${companyFilter}
-${sizeFilter}
+CRITICAL: Return ONLY deep links to specific job descriptions. 
+REJECT: Search results pages, homepages, or list pages.
 
-Find up to ${target} demand-side opportunities (companies seeking contractors, NOT freelancers offering services).
-Exclude supply-side platforms: ${SUPPLY_EXCLUSIONS}
+For each result, evaluate its "fit" against the keywords "${keywords.join(", ")}" and requirements.
+Return a JSON array of objects with:
+- title: Job title
+- company: Company name
+- snippet: 1-2 sentence description
+- link: Direct URL
+- projectType: Contract, Freelance, Full-Time, etc.
+- location: City/Remote
+- priority: Integer 1-5 (5 = perfect match for keywords)
+- matchReason: Brief sentence explaining why this is a good fit.`;
 
-CRITICAL URL RULES — each link MUST:
-- Point to a single, specific job listing page (e.g. linkedin.com/jobs/view/1234567890, lever.co/company/role, greenhouse.io/company/job)
-- NOT be a search results page (reject any URL with /search, /jobs/search, ?q=, ?query=, ?keywords=, ?search= in it)
-- NOT be a homepage, category page, or company careers landing page
-If you cannot find a verified deep link to an individual posting, omit that result.
+      try {
+        const result = await generateWithBackoff(genAI, models, searchTools, prompt, noThinkConfig, 2);
+        return parseJsonArray(result.response.text());
+      } catch (err) {
+        console.error(`Search failed for query "${query}":`, err);
+        return [];
+      }
+    });
 
-Return ONLY a valid JSON array of objects with these fields:
-- title: The job/project title
-- company: The company name
-- snippet: A 1-2 sentence description of the role/project
-- link: The direct, actual URL to the specific posting
-- projectType: One of "Contract", "Part-Time", "Freelance", "RFP", "Full-Time Remote", "Consulting"
-- location: The location or "Remote"
-- source: "job_board"
+    const resultsArray = await Promise.all(searchTasks);
+    const rawItems = resultsArray.flat();
 
-Output ONLY the JSON array.`;
+    // --- STEP 3: DEDUPLICATION & VALIDATION ---
+    const seenLinks = new Set<string>();
+    const jobs = rawItems
+      .filter((item: any) => {
+        if (!item || !item.link) return false;
+        if (seenLinks.has(item.link)) return false;
+        if (!isLinkValid(item.link)) return false;
+        seenLinks.add(item.link);
+        return true;
+      })
+      .slice(0, maxResults);
 
-    const result = await generateWithBackoff(genAI, models, searchTools, prompt, noThinkConfig, 3);
-    const rawItems = parseJsonArray(result.response.text());
-
-    const jobs = rawItems.filter((item: any) => isLinkValid(item.link));
-
-    console.log(`Job search: ${jobs.length} validated of ${rawItems.length} raw`);
+    console.log(`Aggregated search: ${jobs.length} unique validated results from ${rawItems.length} raw`);
 
     return Response.json({ jobs });
   } catch (error: any) {

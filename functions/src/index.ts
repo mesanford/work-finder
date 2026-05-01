@@ -79,15 +79,29 @@ const SEARCH_PAGE_PATTERNS = [
   /\/find(\?|\/jobs)/i,
   /\/vacancies\?/i,
   /\/positions\?/i,
-  /\/jobs\?((?!id=|jk=|jobid=).)*$/i, // job board search params but not individual-job params
+  /\/jobs\?((?!id=|jk=|jobid=).)*$/i,
+  /\/career-search/i,
+  /\/all-jobs/i,
 ];
 
 function isSearchResultPage(url: string): boolean {
+  if (!url) return false;
+  // Common deep link patterns that might trigger regex but are valid
+  if (url.includes("linkedin.com/jobs/view/")) return false;
+  if (url.includes("lever.co/") && url.split("/").length > 4) return false;
+  if (url.includes("greenhouse.io/") && url.includes("/jobs/")) return false;
   return SEARCH_PAGE_PATTERNS.some((p) => p.test(url));
 }
 
 function isLinkValid(url: string): boolean {
   if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes("fiverr.com") || parsed.hostname.includes("freelancer.com")) return false;
+    if (parsed.pathname === "/" || parsed.pathname === "") return false;
+  } catch {
+    return false;
+  }
   return !isSearchResultPage(url);
 }
 
@@ -95,7 +109,7 @@ admin.initializeApp();
 
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 
-const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will"`;
+const SUPPLY_EXCLUSIONS = `-site:fiverr.com -site:upwork.com/freelancers -site:freelancer.com/u -"available for hire" -"I will" -"hire me" -"looking for work"`;
 
 interface SearchProfile {
   id?: string;
@@ -113,11 +127,12 @@ async function runSearchPipeline(
   maxResults = 25
 ): Promise<{ count: number; duplicatesSkipped: number }> {
   const { userId, keywords = [], projectTypes = [], companyTypes = [] } = profile;
-  const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  const models = ["gemini-2.0-flash"];
   // Scale query count to hit maxResults; URL validation drops ~50%, so aim for 2× raw
   const numQueries = Math.min(Math.ceil(maxResults / 5), 20);
   const perQuery = Math.ceil((maxResults * 2) / numQueries);
   const noThinkConfig: any = { thinkingConfig: { thinkingBudget: 0 } };
+  const thinkConfig: any = { thinkingConfig: { thinkingBudget: 2000 } };
   const searchTools = [{ googleSearch: {} } as any];
 
   // Stage 1: KB Profile Build
@@ -144,7 +159,7 @@ async function runSearchPipeline(
     const typeFilter = projectTypes.length ? `Project types: ${projectTypes.join(", ")}` : "";
     const companyFilter = companyTypes.length ? `Company types: ${companyTypes.join(", ")}` : "";
 
-    const queryGenPrompt = `You are helping a senior technology contractor find paid work opportunities.
+    const queryGenPrompt = `You are a specialized lead generation assistant for a high-end contractor.
 
 Contractor profile:
 ${profileText}
@@ -154,19 +169,22 @@ Search criteria:
 ${typeFilter}
 ${companyFilter}
 
-Generate exactly ${numQueries} Google search queries that will find DEMAND-SIDE opportunities only — companies, agencies, or governments seeking to hire or contract this person's services.
+Generate exactly ${numQueries} diverse and distinct Google search queries to find DIRECT hiring opportunities (Demand-side).
+Mix these strategies:
+1. Site-specific for ATS: site:lever.co, site:greenhouse.io, site:boards.greenhouse.io
+2. Professional boards: LinkedIn, Indeed, ZipRecruiter
+3. Niche/Industry vertical: specific hubs for these skills
+4. Direct "Looking for [role]" or "Hiring [role]" queries on public platforms
 
 Rules:
-- Every query must be from the buyer's perspective ("hiring", "seeking", "RFP", "contract opportunity", "statement of work")
-- Append these exclusions to every query: ${SUPPLY_EXCLUSIONS}
-- Vary query structure: mix job boards (site:linkedin.com/jobs), government sources (site:sam.gov), and open web
-- Use different angles: some by skill, some by industry vertical, some by project type, some by geography
-- Tailor queries to the contractor's specific stack and seniority from the profile above
+- Append exclusions: ${SUPPLY_EXCLUSIONS}
+- Ensure queries are from the BUYER perspective.
+- Tailor to the specific stack mentioned in the profile.
 
 Return ONLY a JSON array of exactly ${numQueries} strings.`;
 
     try {
-      const queryGenResult = await generateWithBackoff(genAI, models, [], queryGenPrompt, noThinkConfig, 2);
+      const queryGenResult = await generateWithBackoff(genAI, models, [], queryGenPrompt, thinkConfig, 2);
       queries = parseJsonArray(queryGenResult.response.text()).filter((q) => typeof q === "string");
     } catch (err) {
       console.error("Query generation failed:", err);
@@ -184,22 +202,14 @@ Return ONLY a JSON array of exactly ${numQueries} strings.`;
         genAI,
         models,
         searchTools,
-        `Search for currently open individual job postings and contract opportunities matching: "${q}"
+        `Search for currently open individual job postings for: "${q}"
+Target: ${perQuery} deep links.
 
-Find up to ${perQuery} results.
+CRITICAL: Return ONLY links to specific job descriptions. 
+REJECT: Search results, homepages, or category pages.
+Exemplar: linkedin.com/jobs/view/..., *.lever.co/*/*, greenhouse.io/*/jobs/*
 
-CRITICAL URL RULES — each link MUST:
-- Point to a single, specific job listing page (e.g. linkedin.com/jobs/view/1234567890, indeed.com/viewjob?jk=abc, lever.co/company/job-title)
-- NOT be a search results page (reject any URL containing /search, /jobs/search, ?q=, ?query=, ?keywords=, ?search=)
-- NOT be a homepage or category page
-
-Return ONLY a valid JSON array of objects with:
-- title: The job/project title
-- link: The direct deep-link URL to the individual posting
-- snippet: A 1-2 sentence description
-
-If you cannot find a verified deep link to an individual posting, omit that result entirely.
-Return ONLY the JSON array.`,
+Return ONLY a valid JSON array of objects with: title, link, snippet.`,
         noThinkConfig,
         2
       )
@@ -231,28 +241,25 @@ Return ONLY the JSON array.`,
   let rankedItems: any[] = validated;
 
   if (profileText) {
-    const rerankPrompt = `You are evaluating contract opportunities for a senior technology contractor.
+    const rerankPrompt = `Evaluate these opportunities for a technology contractor.
 
 Contractor profile:
 ${profileText}
 
-Evaluate each opportunity and return a JSON array with these fields:
-- title, link, snippet (unchanged from input)
-- priority: integer 1-5 (5 = excellent fit for this contractor's profile)
-- matchReason: one sentence explaining why this is or isn't a strong fit
-- projectType: one of "Contract", "Part-Time", "Freelance", "RFP", "Full-Time Remote", "Consulting"
-- companyInfo: company name and any size/type info visible from the snippet
+Evaluate fit and return a JSON array with:
+- title, link, snippet (unchanged)
+- priority: 1-5 (5 = perfect match)
+- matchReason: one brief sentence on fit
+- projectType: Contract, Freelance, RFP, Full-Time, etc.
+- companyInfo: Company name and context
 
 Opportunities:
 ${JSON.stringify(validated)}
 
-Rules:
-- Score 1-2 only if clearly misaligned with the contractor's stack or seniority
-- Score 4-5 only if there is explicit skill overlap AND contract type matches their preferences
-- Return ONLY the JSON array, preserving all input items`;
+Output ONLY valid JSON array.`;
 
     try {
-      const rerankResult = await generateWithBackoff(genAI, models, [], rerankPrompt, noThinkConfig, 2);
+      const rerankResult = await generateWithBackoff(genAI, models, [], rerankPrompt, thinkConfig, 2);
       const reranked = parseJsonArray(rerankResult.response.text());
       if (reranked.length > 0) rankedItems = reranked;
     } catch (err) {
@@ -376,7 +383,7 @@ export const processLeadOnCreate = onDocumentCreated({ document: "leads/{leadId}
   if (data.status !== "new") return;
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY.value());
-  const processModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  const processModels = ["gemini-2.0-flash"]; // Updated model name
 
   // If reranking already set priority and projectType, only extract skills and contact methods
   const alreadyScored = data.priority != null && data.projectType != null;

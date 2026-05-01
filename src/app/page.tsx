@@ -351,6 +351,8 @@ export default function Dashboard() {
                 userId: user.uid,
                 companyInfo: job.company || null,
                 projectType: job.projectType || null,
+                priority: job.priority || 3,
+                matchReason: job.matchReason || null,
                 createdAt: serverTimestamp(),
                 query: (profile.keywords || []).join(", "),
               });
